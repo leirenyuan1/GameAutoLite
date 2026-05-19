@@ -84,7 +84,7 @@ pyinstaller --onefile --windowed --add-data "config.json;." main_ui.py
 
 ## 📝 开发记录
 
-本项目完全由 AI（Claude Code）辅助开发完成，开发流程详见 [开发流程.txt](开发流程.txt)。
+本项目完全由 AI 辅助开发完成，开发流程详见 [开发流程.txt](开发流程.txt)。
 
 v1.1 迭代修复记录：
 - 高 DPI 缩放下坐标偏移修复
@@ -94,6 +94,13 @@ v1.1 迭代修复记录：
 - 延迟/冷却输入验证
 - 滑块滚轮误触修复
 - exe 配置持久化
+
+## 致谢
+
+感谢以下工具与 AI 模型在本项目开发过程中提供的支持：
+
+- **开发环境与工具**：VS Code, Claude Code, CC Switch
+- **AI 辅助编程与对话**：DeepSeek-v4-pro, Claude, Gemini, 豆包
 
 ---
 
