@@ -138,6 +138,8 @@ class _OverlayWidget(QWidget):
     def run_blocking(self) -> tuple[int, int, int, int] | None:
         """显示窗口并进入阻塞事件循环, 窗口关闭后返回结果."""
         self.show()
+        self.activateWindow()
+        self.setFocus()
         self._loop.exec()
         return self._result
 

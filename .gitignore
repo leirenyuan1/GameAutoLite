@@ -5,3 +5,5 @@ exe_dist/
 build/
 dist/
 *.pyc
+config.json
+screenshots/

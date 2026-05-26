@@ -26,10 +26,10 @@ import mss
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QScrollArea,
-    QSlider, QFrame, QSizePolicy, QFileDialog, QSpacerItem
+    QSlider, QFrame, QSizePolicy, QFileDialog, QSpacerItem, QMessageBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
-from PyQt6.QtGui import QFont, QPixmap, QIntValidator
+from PyQt6.QtGui import QFont, QPixmap, QIntValidator, QIcon
 import keyboard
 
 import image_engine
@@ -235,7 +235,7 @@ class TaskCard(QFrame):
             result = overlay_selector.get_region()
         finally:
             if main_win:
-                main_win.show()
+                main_win.showNormal()
         if result is None:
             return
         x, y, w, h = result
@@ -279,7 +279,7 @@ class TaskCard(QFrame):
             result = overlay_selector.get_region()
         finally:
             if main_win:
-                main_win.show()
+                main_win.showNormal()
         if result is not None:
             x, y, w, h = result
             self._region = (x, y, w, h)
@@ -564,6 +564,32 @@ class MainWindow(QMainWindow):
         self.chk_top.toggled.connect(self._on_top_toggled)
         ctrl_layout.addWidget(self.chk_top)
 
+        # 方案导入导出按钮
+        io_row = QHBoxLayout()
+        io_row.setSpacing(8)
+        self.btn_export = QPushButton("💾 导出方案")
+        self.btn_export.setStyleSheet("""
+            QPushButton {
+                background: #fff; border: 1px solid #ccc; border-radius: 4px;
+                padding: 6px 12px; font-size: 12px;
+            }
+            QPushButton:hover { border-color: #4a90d9; color: #4a90d9; }
+        """)
+        self.btn_export.clicked.connect(self._on_export)
+        self.btn_import = QPushButton("📂 导入方案")
+        self.btn_import.setStyleSheet("""
+            QPushButton {
+                background: #fff; border: 1px solid #ccc; border-radius: 4px;
+                padding: 6px 12px; font-size: 12px;
+            }
+            QPushButton:hover { border-color: #4a90d9; color: #4a90d9; }
+        """)
+        self.btn_import.clicked.connect(self._on_import)
+        io_row.addWidget(self.btn_export)
+        io_row.addWidget(self.btn_import)
+        io_row.addStretch(1)
+        ctrl_layout.addLayout(io_row)
+
         # 开始/停止按钮
         self.btn_toggle = QPushButton("▶  开  始")
         self.btn_toggle.setStyleSheet(self._start_btn_style())
@@ -768,6 +794,72 @@ class MainWindow(QMainWindow):
             QPushButton:pressed { background: #c0392b; }
         """
 
+    # ---- 方案导入导出 ----
+
+    def _on_export(self) -> None:
+        """导出当前所有任务配置为 .galt 文件."""
+        if not self._task_cards:
+            QMessageBox.information(self, "提示", "当前没有任务可导出。")
+            return
+
+        # 生成默认文件名
+        if len(self._task_cards) == 1:
+            name = self._task_cards[0].name_edit.text().strip() or "方案"
+            default_name = f"{name}.galt"
+        else:
+            default_name = f"方案_{int(time.time())}.galt"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出方案", default_name, "方案文件 (*.galt);;所有文件 (*)"
+        )
+        if not path:
+            return
+
+        data = [card.to_dict() for card in self._task_cards]
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "导出成功", f"方案已保存到:\n{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", f"保存文件时出错:\n{e}")
+
+    def _on_import(self) -> None:
+        """从 .galt 文件导入方案, 替换当前所有任务."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入方案", "", "方案文件 (*.galt);;所有文件 (*)"
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(self, "导入失败", f"无法读取文件:\n{e}")
+            return
+
+        if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+            QMessageBox.warning(self, "导入失败", "文件格式不正确，需要是有效的方案文件。")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认导入",
+            "导入将替换当前所有任务，是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 清空当前任务
+        for card in list(self._task_cards):
+            self._remove_task(card)
+
+        # 导入新任务
+        for item in data:
+            self._add_task(item)
+
+        self._save_config()
+
     # ---- 配置持久化 ----
 
     def _save_config(self) -> None:
@@ -812,6 +904,11 @@ if __name__ == "__main__":
     os.environ["QT_SCALE_FACTOR"] = "1"
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 10))
+    # 设置窗口图标(支持 exe 和脚本两种模式)
+    _icon_dir = getattr(sys, "_MEIPASS", _app_dir)
+    _icon_path = os.path.join(_icon_dir, "icon.ico")
+    if os.path.exists(_icon_path):
+        app.setWindowIcon(QIcon(_icon_path))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
