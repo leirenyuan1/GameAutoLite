@@ -18,7 +18,7 @@ import win32api
 import win32con
 
 
-def _real_click() -> None:
+def _real_click(speed: float = 1.0) -> None:
     """
     执行真实按压点击.
     严禁使用任何封装好的 click() 函数, 必须拆分为:
@@ -27,11 +27,11 @@ def _real_click() -> None:
       3. mouse_event LEFTUP     -- 松开
     """
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
-    time.sleep(random.uniform(0.05, 0.15))
+    time.sleep(random.uniform(0.05, 0.15) / speed)
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
 
 
-def _bezier_move(tx: int, ty: int) -> None:
+def _bezier_move(tx: int, ty: int, speed: float = 1.0) -> None:
     """
     四阶贝塞尔曲线移动鼠标到目标点(tx, ty).
     包含: 随机控制点偏移 + 物理惯性速度曲线 + 路径抖动 + 动态耗时.
@@ -41,11 +41,11 @@ def _bezier_move(tx: int, ty: int) -> None:
     # 计算起点到终点的像素距离
     dist = math.hypot(tx - sx, ty - sy)
 
-    # 按距离动态分配总耗时
+    # 按距离动态分配总耗时, speed 越大越快
     if dist < 200:
-        total_time = random.uniform(0.15, 0.3)   # 150~300ms
+        total_time = random.uniform(0.15, 0.3) / speed
     else:
-        total_time = random.uniform(0.4, 0.65)   # 400~650ms
+        total_time = random.uniform(0.4, 0.65) / speed
 
     # 采样点数: 60~80 个
     num_samples = random.randint(60, 80)
@@ -116,7 +116,7 @@ def _bezier_move(tx: int, ty: int) -> None:
         time.sleep(step_time)
 
 
-def click_in_region(x: int, y: int, w: int, h: int) -> None:
+def click_in_region(x: int, y: int, w: int, h: int, move_speed: float = 1.0, click_speed: float = 1.0) -> None:
     """
     在矩形区域内随机取点, 贝塞尔曲线移动过去, 执行真实按压点击.
     调用方只需传入区域坐标, 内部自动完成全部步骤.
@@ -130,7 +130,49 @@ def click_in_region(x: int, y: int, w: int, h: int) -> None:
     ty = random.randint(y, y + h)
 
     # 第二步: 贝塞尔曲线移动到目标点
-    _bezier_move(tx, ty)
+    _bezier_move(tx, ty, move_speed)
 
     # 第三步: 真实按压点击
-    _real_click()
+    _real_click(click_speed)
+
+
+def click_in_region_multi(
+    x: int, y: int, w: int, h: int,
+    count: int,
+    interval_range: tuple = (0.15, 0.25),
+    offset_range: int = 4,
+    stop_event=None,
+    move_speed: float = 1.0,
+    click_speed: float = 1.0,
+) -> None:
+    """
+    在区域内多次点击, 用于双击/连击.
+    第一次: 随机取点 + 贝塞尔移动 + 真实点击(无偏移).
+    后续每次: 随机间隔 + 随机偏移(钳制在区域内) + 贝塞尔移动 + 真实点击.
+    """
+    tx = random.randint(x, x + w)
+    ty = random.randint(y, y + h)
+    _bezier_move(tx, ty, move_speed)
+    _real_click(click_speed)
+
+    for i in range(1, count):
+        if stop_event and stop_event.is_set():
+            break
+
+        interval = random.uniform(interval_range[0], interval_range[1]) / click_speed
+        end = time.time() + interval
+        while time.time() < end:
+            if stop_event and stop_event.is_set():
+                return
+            time.sleep(0.05)
+
+        if stop_event and stop_event.is_set():
+            break
+
+        dx = random.randint(-offset_range, offset_range)
+        dy = random.randint(-offset_range, offset_range)
+        tx = max(x, min(x + w, tx + dx))
+        ty = max(y, min(y + h, ty + dy))
+
+        _bezier_move(tx, ty, move_speed)
+        _real_click(click_speed)

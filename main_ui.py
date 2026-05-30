@@ -11,6 +11,7 @@
   - 退出时保存 config.json, 启动时自动恢复
 """
 
+import base64
 import json
 import os
 import random
@@ -26,7 +27,8 @@ import mss
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QScrollArea,
-    QSlider, QFrame, QSizePolicy, QFileDialog, QSpacerItem, QMessageBox
+    QSlider, QFrame, QSizePolicy, QFileDialog, QSpacerItem, QMessageBox,
+    QStackedWidget, QComboBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
 from PyQt6.QtGui import QFont, QPixmap, QIntValidator, QIcon
@@ -61,8 +63,8 @@ class TaskCard(QFrame):
         super().__init__(parent)
         self._image_path: str | None = None
         self._region: tuple[int, int, int, int] | None = None
-        self._cooldown_min = 0
-        self._cooldown_max = 0
+        self._click_on_match = False
+        self._click_count = 1
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -88,17 +90,14 @@ class TaskCard(QFrame):
 
         self.btn_up = QPushButton("↑")
         self.btn_up.setFixedSize(28, 28)
-        self.btn_up.setToolTip("上移")
         self.btn_up.clicked.connect(lambda: self.moved_up.emit(self))
 
         self.btn_down = QPushButton("↓")
         self.btn_down.setFixedSize(28, 28)
-        self.btn_down.setToolTip("下移")
         self.btn_down.clicked.connect(lambda: self.moved_down.emit(self))
 
         self.btn_delete = QPushButton("🗑")
         self.btn_delete.setFixedSize(28, 28)
-        self.btn_delete.setToolTip("删除")
         self.btn_delete.clicked.connect(lambda: self.removed.emit(self))
 
         row1.addWidget(self.name_edit, 1)
@@ -135,11 +134,11 @@ class TaskCard(QFrame):
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(50, 99)
-        self.slider.setValue(80)
+        self.slider.setValue(90)
         self.slider.wheelEvent = lambda event: event.ignore()
         self.slider.valueChanged.connect(self._on_slider_changed)
 
-        self.label_threshold = QLabel("80%")
+        self.label_threshold = QLabel("90%")
 
         row3.addWidget(self.slider, 1)
         row3.addWidget(self.label_threshold)
@@ -157,6 +156,30 @@ class TaskCard(QFrame):
         row4.addWidget(self.label_region)
         row4.addStretch(1)
         root.addLayout(row4)
+
+        # ---- 行4b: 点击区域为识别图 ----
+        self.chk_click_on_match = QCheckBox("点击区域为识别图")
+        self.chk_click_on_match.setStyleSheet("font-size: 12px; color: #555;")
+        self.chk_click_on_match.toggled.connect(self._on_click_on_match_changed)
+        root.addWidget(self.chk_click_on_match)
+
+        # ---- 行4c: 鼠标点击行为 ----
+        row4c = QHBoxLayout()
+        row4c.addWidget(QLabel("鼠标点击行为:"))
+        self.combo_click_mode = QComboBox()
+        self.combo_click_mode.setEditable(True)
+        self.combo_click_mode.addItems(["单击", "双击"])
+        self.combo_click_mode.setFixedWidth(100)
+        self.combo_click_mode.wheelEvent = lambda event: event.ignore()
+        self.combo_click_mode.setStyleSheet("""
+            QComboBox { background: #fff; border: 1px solid #ccc; border-radius: 4px; padding: 4px; font-size: 12px; }
+            QComboBox QAbstractItemView { background: #fff; color: #333; selection-background-color: #4a90d9; selection-color: #fff; }
+        """)
+        self.combo_click_mode.currentTextChanged.connect(self._on_click_mode_changed)
+        row4c.addWidget(self.combo_click_mode)
+        row4c.addWidget(QLabel("击（可填入1~9999的阿拉伯数字）"))
+        row4c.addStretch(1)
+        root.addLayout(row4c)
 
         # ---- 行5: 识别后随机延迟 ----
         row5 = QHBoxLayout()
@@ -229,13 +252,16 @@ class TaskCard(QFrame):
     def _on_screenshot_capture(self) -> None:
         """通过 overlay 框选屏幕区域, 截图并保存为模板图片."""
         main_win = self.window()
+        geom = main_win.geometry() if main_win else None
         if main_win and main_win.isVisible():
             main_win.hide()
         try:
             result = overlay_selector.get_region()
         finally:
             if main_win:
-                main_win.showNormal()
+                if geom:
+                    main_win.setGeometry(geom)
+                main_win.show()
         if result is None:
             return
         x, y, w, h = result
@@ -267,19 +293,50 @@ class TaskCard(QFrame):
         self.img_preview.setStyleSheet("border: 1px solid #ccc;")
         self._update_image_warning()
 
+    def _on_click_on_match_changed(self, checked: bool) -> None:
+        self._click_on_match = checked
+        if checked:
+            self.btn_region.setDisabled(True)
+            self.label_region.setText("跟随识别图")
+            self.label_region.setStyleSheet("color: #4a90d9; font-weight: bold;")
+        else:
+            self.btn_region.setDisabled(False)
+            if self._region:
+                x, y, w, h = self._region
+                self.label_region.setText(f"{x},{y}  {w}×{h}")
+                self.label_region.setStyleSheet("color: #333; font-weight: bold;")
+            else:
+                self.label_region.setText("未设定")
+                self.label_region.setStyleSheet("color: #999;")
+
+    def _on_click_mode_changed(self, text: str) -> None:
+        if text == "单击":
+            self._click_count = 1
+        elif text == "双击":
+            self._click_count = 2
+        else:
+            try:
+                val = int(text)
+                self._click_count = max(1, min(9999, val))
+            except ValueError:
+                self._click_count = 1
+
     def _on_slider_changed(self, value: int) -> None:
         self.label_threshold.setText(f"{value}%")
 
     def _on_set_region(self) -> None:
         # 隐藏主窗口避免遮挡
         main_win = self.window()
+        geom = main_win.geometry() if main_win else None
         if main_win and main_win.isVisible():
             main_win.hide()
         try:
             result = overlay_selector.get_region()
         finally:
             if main_win:
-                main_win.showNormal()
+                if geom:
+                    main_win.setGeometry(geom)
+                main_win.show()
         if result is not None:
             x, y, w, h = result
             self._region = (x, y, w, h)
@@ -333,10 +390,11 @@ class TaskCard(QFrame):
     # ---- 配置完备性 ----
 
     def is_configured(self) -> bool:
-        """任务是否配置完整: 有图片 + 有区域."""
+        """任务是否配置完整: 有图片 + 有区域(或勾选了跟随识别图)."""
         has_image = bool(self._image_path and os.path.exists(self._image_path))
-        has_region = self._region is not None
-        return has_image and has_region
+        if self._click_on_match:
+            return has_image
+        return has_image and self._region is not None
 
     # ---- 序列化 ----
 
@@ -346,6 +404,8 @@ class TaskCard(QFrame):
             "image_path": self._image_path or "",
             "threshold": self.slider.value(),
             "region": list(self._region) if self._region else None,
+            "click_on_match": self._click_on_match,
+            "click_count": self._click_count,
             "delay_min": int(self.edit_delay_min.text() or "200"),
             "delay_max": int(self.edit_delay_max.text() or "500"),
             "cooldown_min": int(self.edit_cooldown_min.text() or "0"),
@@ -370,7 +430,7 @@ class TaskCard(QFrame):
                 ))
                 self.img_preview.setStyleSheet("border: 1px solid #ccc;")
                 self._update_image_warning()
-        self.slider.setValue(data.get("threshold", 80))
+        self.slider.setValue(data.get("threshold", 90))
         region = data.get("region")
         if region and len(region) == 4:
             x, y, w, h = region
@@ -381,6 +441,20 @@ class TaskCard(QFrame):
         self.edit_delay_max.setText(str(data.get("delay_max", 500)))
         self.edit_cooldown_min.setText(str(data.get("cooldown_min", 0)))
         self.edit_cooldown_max.setText(str(data.get("cooldown_max", 0)))
+        if data.get("click_on_match", False):
+            self.chk_click_on_match.setChecked(True)
+        # 向后兼容: 旧配置 click_mode → click_count
+        click_count = data.get("click_count")
+        if click_count is None:
+            old_mode = data.get("click_mode", "single")
+            click_count = {"single": 1, "double": 2}.get(old_mode, 1)
+        if click_count == 1:
+            self.combo_click_mode.setCurrentText("单击")
+        elif click_count == 2:
+            self.combo_click_mode.setCurrentText("双击")
+        else:
+            self.combo_click_mode.setCurrentText(str(click_count))
+        self._click_count = click_count
 
 
 # ============================================================
@@ -392,10 +466,15 @@ class EngineThread(QThread):
 
     status_update = pyqtSignal(str)
 
-    def __init__(self, task_configs: list[dict], parent=None):
+    def __init__(self, task_configs: list[dict], scan_interval: int = 50,
+                 move_speed: float = 1.0, click_speed: float = 1.0, parent=None):
         super().__init__(parent)
         self._task_configs = task_configs
+        self._scan_interval = scan_interval
+        self._move_speed = move_speed
+        self._click_speed = click_speed
         self._stop_event = threading.Event()
+        self._template_cache: dict[str, object] = {}
 
     def run(self) -> None:
         self.status_update.emit("● 运行中...")
@@ -415,7 +494,15 @@ class EngineThread(QThread):
                 if self._stop_event.is_set():
                     break
 
-                template = image_engine.load_template(cfg["image_path"])
+                img_path = cfg["image_path"]
+                if img_path in self._template_cache:
+                    template = self._template_cache[img_path]
+                else:
+                    template = image_engine.load_template(img_path)
+                    if template is not None:
+                        self._template_cache[img_path] = template
+                    else:
+                        template = None
                 if template is None:
                     continue
 
@@ -434,9 +521,24 @@ class EngineThread(QThread):
                         break
 
                     # 4. 执行点击
-                    rx, ry, rw, rh = cfg["region"]
+                    if cfg.get("click_on_match", False):
+                        rx, ry, rw, rh = result
+                    else:
+                        rx, ry, rw, rh = cfg["region"]
                     try:
-                        mouse_controller.click_in_region(rx, ry, rw, rh)
+                        click_count = cfg.get("click_count", 1)
+                        if click_count <= 1:
+                            mouse_controller.click_in_region(
+                                rx, ry, rw, rh,
+                                move_speed=self._move_speed,
+                                click_speed=self._click_speed,
+                            )
+                        else:
+                            mouse_controller.click_in_region_multi(
+                                rx, ry, rw, rh, count=click_count,
+                                move_speed=self._move_speed,
+                                click_speed=self._click_speed,
+                            )
                     except Exception as e:
                         logger.error(f"点击失败: {e}")
 
@@ -456,6 +558,8 @@ class EngineThread(QThread):
 
             if not matched and not self._stop_event.is_set():
                 self.status_update.emit("● 运行中...")
+                if self._scan_interval > 0:
+                    self._sleep_interruptible(self._scan_interval / 1000.0)
 
         self.status_update.emit("● 已停止")
 
@@ -484,6 +588,8 @@ class MainWindow(QMainWindow):
         self._task_cards: list[TaskCard] = []
         self._engine: EngineThread | None = None
         self._f8_registered = True
+        self._auto_minimized = False
+        self._global_settings: dict = {"scan_interval": 50, "auto_minimize": False, "move_speed": 1.0, "click_speed": 1.0}
 
         self._setup_ui()
         self._register_f8_hotkey()
@@ -492,11 +598,15 @@ class MainWindow(QMainWindow):
     # ---- UI 构建 ----
 
     def _setup_ui(self) -> None:
-        central = QWidget()
-        self.setCentralWidget(central)
         self.setStyleSheet("QMainWindow { background-color: #f2f2f2; }")
 
-        main_layout = QVBoxLayout(central)
+        # -- QStackedWidget: 页面切换 --
+        self._stack = QStackedWidget()
+        self.setCentralWidget(self._stack)
+
+        # ========== 页面 0: 主页 ==========
+        main_page = QWidget()
+        main_layout = QVBoxLayout(main_page)
         main_layout.setContentsMargins(12, 12, 12, 8)
         main_layout.setSpacing(8)
 
@@ -558,11 +668,17 @@ class MainWindow(QMainWindow):
         self.chk_f8.toggled.connect(self._on_f8_toggled)
         ctrl_layout.addWidget(self.chk_f8)
 
-        # 窗口置顶勾选框
+        # 窗口置顶 + 自动最小化
+        opt_row = QHBoxLayout()
         self.chk_top = QCheckBox("📌 窗口置顶")
         self.chk_top.setChecked(False)
         self.chk_top.toggled.connect(self._on_top_toggled)
-        ctrl_layout.addWidget(self.chk_top)
+        self.chk_auto_minimize = QCheckBox("开始后自动最小化")
+        self.chk_auto_minimize.setChecked(False)
+        opt_row.addWidget(self.chk_top)
+        opt_row.addWidget(self.chk_auto_minimize)
+        opt_row.addStretch(1)
+        ctrl_layout.addLayout(opt_row)
 
         # 方案导入导出按钮
         io_row = QHBoxLayout()
@@ -585,8 +701,18 @@ class MainWindow(QMainWindow):
             QPushButton:hover { border-color: #4a90d9; color: #4a90d9; }
         """)
         self.btn_import.clicked.connect(self._on_import)
+        self.btn_settings = QPushButton("⚙ 全局设置")
+        self.btn_settings.setStyleSheet("""
+            QPushButton {
+                background: #fff; border: 1px solid #ccc; border-radius: 4px;
+                padding: 6px 12px; font-size: 12px;
+            }
+            QPushButton:hover { border-color: #4a90d9; color: #4a90d9; }
+        """)
+        self.btn_settings.clicked.connect(self._on_global_settings)
         io_row.addWidget(self.btn_export)
         io_row.addWidget(self.btn_import)
+        io_row.addWidget(self.btn_settings)
         io_row.addStretch(1)
         ctrl_layout.addLayout(io_row)
 
@@ -611,6 +737,139 @@ class MainWindow(QMainWindow):
         hint.setFont(QFont("Microsoft YaHei", 9))
         hint.setStyleSheet("color: #aaa; padding: 4px;")
         main_layout.addWidget(hint)
+
+        self._stack.addWidget(main_page)  # index 0
+
+        # ========== 页面 1: 全局设置 ==========
+        settings_page = QWidget()
+        settings_layout = QVBoxLayout(settings_page)
+        settings_layout.setContentsMargins(12, 12, 12, 8)
+        settings_layout.setSpacing(10)
+
+        # 顶部: 返回按钮 + 标题
+        settings_top = QHBoxLayout()
+        btn_back = QPushButton("← 返回主页")
+        btn_back.setStyleSheet("""
+            QPushButton {
+                background: none; border: none; color: #4a90d9;
+                font-size: 13px; padding: 4px 0;
+            }
+            QPushButton:hover { text-decoration: underline; }
+        """)
+        btn_back.clicked.connect(self._on_settings_cancel)
+        settings_title = QLabel("⚙ 全局设置")
+        settings_title.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
+        settings_title.setStyleSheet("color: #2c3e50;")
+        settings_top.addWidget(btn_back)
+        settings_top.addStretch(1)
+        settings_layout.addLayout(settings_top)
+        settings_layout.addWidget(settings_title)
+
+        # 设置卡片: 扫描设置
+        scan_card = QFrame()
+        scan_card.setStyleSheet("""
+            QFrame {
+                background: #fff; border-radius: 8px;
+                border: 1px solid #d0d0d0; padding: 12px;
+            }
+        """)
+        scan_layout = QVBoxLayout(scan_card)
+        scan_layout.setSpacing(6)
+
+        scan_header = QLabel("扫描设置")
+        scan_header.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
+        scan_header.setStyleSheet("color: #2c3e50;")
+        scan_layout.addWidget(scan_header)
+
+        scan_row = QHBoxLayout()
+        scan_row.addWidget(QLabel("图像扫描间隔"))
+        self.edit_scan_interval = QLineEdit("50")
+        self.edit_scan_interval.setFixedWidth(80)
+        self.edit_scan_interval.setValidator(QIntValidator(0, 10000))
+        scan_row.addWidget(self.edit_scan_interval)
+        scan_row.addWidget(QLabel("ms"))
+        scan_row.addStretch(1)
+        scan_layout.addLayout(scan_row)
+
+        scan_desc = QLabel("未匹配图像时每轮扫描的等待时间，设为 0 则全速扫描")
+        scan_desc.setStyleSheet("color: #999; font-size: 11px;")
+        scan_desc.setWordWrap(True)
+        scan_layout.addWidget(scan_desc)
+
+        settings_layout.addWidget(scan_card)
+
+        # 设置卡片: 鼠标速度
+        speed_card = QFrame()
+        speed_card.setStyleSheet("""
+            QFrame {
+                background: #fff; border-radius: 8px;
+                border: 1px solid #d0d0d0; padding: 12px;
+            }
+        """)
+        speed_layout = QVBoxLayout(speed_card)
+        speed_layout.setSpacing(6)
+
+        speed_header = QLabel("鼠标速度")
+        speed_header.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
+        speed_header.setStyleSheet("color: #2c3e50;")
+        speed_layout.addWidget(speed_header)
+
+        speed_options = ["0.5X", "0.75X", "1.0X", "1.25X", "1.5X", "2.0X"]
+        speed_combo_style = """
+            QComboBox { background: #fff; border: 1px solid #ccc; border-radius: 4px; padding: 4px; font-size: 12px; }
+            QComboBox QAbstractItemView { background: #fff; color: #333; selection-background-color: #4a90d9; selection-color: #fff; }
+        """
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("移动速度"))
+        self.combo_move_speed = QComboBox()
+        self.combo_move_speed.addItems(speed_options)
+        self.combo_move_speed.setCurrentIndex(2)  # 1.0X
+        self.combo_move_speed.setFixedWidth(100)
+        self.combo_move_speed.wheelEvent = lambda event: event.ignore()
+        self.combo_move_speed.setStyleSheet(speed_combo_style)
+        speed_row.addWidget(self.combo_move_speed)
+        speed_row.addSpacing(16)
+        speed_row.addWidget(QLabel("点击速度"))
+        self.combo_click_speed = QComboBox()
+        self.combo_click_speed.addItems(speed_options)
+        self.combo_click_speed.setCurrentIndex(2)  # 1.0X
+        self.combo_click_speed.setFixedWidth(100)
+        self.combo_click_speed.wheelEvent = lambda event: event.ignore()
+        self.combo_click_speed.setStyleSheet(speed_combo_style)
+        speed_row.addWidget(self.combo_click_speed)
+        speed_row.addStretch(1)
+        speed_layout.addLayout(speed_row)
+
+        settings_layout.addWidget(speed_card)
+        settings_layout.addStretch(1)
+
+        # 底部按钮
+        settings_btns = QHBoxLayout()
+        settings_btns.addStretch(1)
+        btn_save = QPushButton("保存")
+        btn_save.setStyleSheet("""
+            QPushButton {
+                background: #27ae60; color: #fff; border: none;
+                border-radius: 4px; padding: 8px 24px; font-size: 13px;
+            }
+            QPushButton:hover { background: #2ecc71; }
+        """)
+        btn_save.clicked.connect(self._on_settings_save)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.setStyleSheet("""
+            QPushButton {
+                background: #eee; color: #666; border: 1px solid #ccc;
+                border-radius: 4px; padding: 8px 24px; font-size: 13px;
+            }
+            QPushButton:hover { background: #ddd; }
+        """)
+        btn_cancel.clicked.connect(self._on_settings_cancel)
+        settings_btns.addWidget(btn_save)
+        settings_btns.addWidget(btn_cancel)
+        settings_layout.addLayout(settings_btns)
+
+        self._stack.addWidget(settings_page)  # index 1
 
     # ---- F8 热键 ----
 
@@ -637,12 +896,13 @@ class MainWindow(QMainWindow):
 
     def _on_top_toggled(self, checked: bool) -> None:
         """切换窗口置顶状态."""
+        geom = self.geometry()
         flags = self.windowFlags()
         if checked:
             self.setWindowFlags(flags | Qt.WindowType.WindowStaysOnTopHint)
         else:
             self.setWindowFlags(flags & ~Qt.WindowType.WindowStaysOnTopHint)
-        # 修改 windowFlags 后需要重新 show 才能生效
+        self.setGeometry(geom)
         self.show()
 
     def _on_f8_hotkey(self) -> None:
@@ -665,6 +925,7 @@ class MainWindow(QMainWindow):
             self._start_engine()
 
     def _start_engine(self) -> None:
+        self._global_settings["auto_minimize"] = self.chk_auto_minimize.isChecked()
         # 收集所有配置完整的任务
         configs = self._collect_task_configs()
         if not configs:
@@ -672,7 +933,12 @@ class MainWindow(QMainWindow):
             self.label_status.setStyleSheet("color: #e67e22;")
             return
 
-        self._engine = EngineThread(configs)
+        self._engine = EngineThread(
+            configs,
+            scan_interval=self._global_settings.get("scan_interval", 50),
+            move_speed=self._global_settings.get("move_speed", 1.0),
+            click_speed=self._global_settings.get("click_speed", 1.0),
+        )
         self._engine.status_update.connect(self._on_status_update)
         self._engine.finished.connect(self._on_engine_finished)
         self._engine.start()
@@ -680,8 +946,17 @@ class MainWindow(QMainWindow):
         self.btn_toggle.setText("⏹  停  止")
         self.btn_toggle.setStyleSheet(self._stop_btn_style())
 
+        if self.chk_auto_minimize.isChecked():
+            self._auto_minimized = True
+            self.showMinimized()
+
     def _stop_engine(self) -> None:
         if self._engine:
+            try:
+                self._engine.status_update.disconnect(self._on_status_update)
+                self._engine.finished.disconnect(self._on_engine_finished)
+            except Exception:
+                pass
             self._engine.stop()
             self._engine.wait(3000)
         self._on_engine_finished()
@@ -700,6 +975,9 @@ class MainWindow(QMainWindow):
         self.btn_toggle.setStyleSheet(self._start_btn_style())
         self.label_status.setText("● 已停止")
         self.label_status.setStyleSheet("color: #e74c3c;")
+        if self._auto_minimized:
+            self._auto_minimized = False
+            self.showNormal()
 
     def _collect_task_configs(self) -> list[dict]:
         configs = []
@@ -794,6 +1072,34 @@ class MainWindow(QMainWindow):
             QPushButton:pressed { background: #c0392b; }
         """
 
+    # ---- 全局设置导航 ----
+
+    def _on_global_settings(self) -> None:
+        """切换到全局设置页面."""
+        self.edit_scan_interval.setText(str(self._global_settings.get("scan_interval", 50)))
+        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        move_val = self._global_settings.get("move_speed", 1.0)
+        click_val = self._global_settings.get("click_speed", 1.0)
+        self.combo_move_speed.setCurrentIndex(speed_options.index(move_val) if move_val in speed_options else 2)
+        self.combo_click_speed.setCurrentIndex(speed_options.index(click_val) if click_val in speed_options else 2)
+        self._stack.setCurrentIndex(1)
+
+    def _on_settings_save(self) -> None:
+        """保存设置并返回主页."""
+        try:
+            self._global_settings["scan_interval"] = int(self.edit_scan_interval.text() or "50")
+        except ValueError:
+            self._global_settings["scan_interval"] = 50
+        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        self._global_settings["move_speed"] = speed_options[self.combo_move_speed.currentIndex()]
+        self._global_settings["click_speed"] = speed_options[self.combo_click_speed.currentIndex()]
+        self._save_config()
+        self._stack.setCurrentIndex(0)
+
+    def _on_settings_cancel(self) -> None:
+        """不保存直接返回主页."""
+        self._stack.setCurrentIndex(0)
+
     # ---- 方案导入导出 ----
 
     def _on_export(self) -> None:
@@ -815,7 +1121,17 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        data = [card.to_dict() for card in self._task_cards]
+        data = []
+        for card in self._task_cards:
+            task_data = card.to_dict()
+            if card._image_path and os.path.exists(card._image_path):
+                task_data["image_filename"] = os.path.basename(card._image_path)
+                try:
+                    with open(card._image_path, "rb") as img_f:
+                        task_data["image_data"] = base64.b64encode(img_f.read()).decode("utf-8")
+                except Exception:
+                    pass
+            data.append(task_data)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -842,20 +1158,44 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "导入失败", "文件格式不正确，需要是有效的方案文件。")
             return
 
-        reply = QMessageBox.question(
-            self, "确认导入",
-            "导入将替换当前所有任务，是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        msg = QMessageBox(self)
+        msg.setWindowTitle("导入方案")
+        msg.setText("请选择导入方式：")
+        msg.setInformativeText("替换：清空当前任务后导入\n新增：追加到当前任务末尾")
+        btn_replace = msg.addButton("替换", QMessageBox.ButtonRole.AcceptRole)
+        btn_append = msg.addButton("新增", QMessageBox.ButtonRole.ActionRole)
+        btn_cancel = msg.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+
+        if msg.clickedButton() != btn_replace and msg.clickedButton() != btn_append:
             return
 
-        # 清空当前任务
-        for card in list(self._task_cards):
-            self._remove_task(card)
+        if msg.clickedButton() == btn_replace:
+            for card in list(self._task_cards):
+                self._remove_task(card)
 
-        # 导入新任务
+        # 导入新任务(智能检测图片)
+        save_dir = os.path.join(_app_dir, "screenshots")
         for item in data:
+            img_path = item.get("image_path", "")
+            if img_path and os.path.exists(img_path):
+                pass  # 原图还在, 直接用
+            else:
+                # 检查 screenshots 目录下是否有同名文件
+                img_filename = item.get("image_filename", "")
+                if img_filename:
+                    restored_path = os.path.join(save_dir, img_filename)
+                    if os.path.exists(restored_path):
+                        item["image_path"] = restored_path
+                    elif item.get("image_data"):
+                        try:
+                            img_bytes = base64.b64decode(item["image_data"])
+                            os.makedirs(save_dir, exist_ok=True)
+                            with open(restored_path, "wb") as img_f:
+                                img_f.write(img_bytes)
+                            item["image_path"] = restored_path
+                        except Exception as e:
+                            logger.error(f"从方案还原图片失败: {e}")
             self._add_task(item)
 
         self._save_config()
@@ -863,7 +1203,10 @@ class MainWindow(QMainWindow):
     # ---- 配置持久化 ----
 
     def _save_config(self) -> None:
-        data = [card.to_dict() for card in self._task_cards]
+        data = {
+            "settings": self._global_settings,
+            "tasks": [card.to_dict() for card in self._task_cards],
+        }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -872,20 +1215,28 @@ class MainWindow(QMainWindow):
 
     def _load_config(self) -> None:
         if not os.path.exists(CONFIG_FILE):
-            # 首次启动, 自动添加一个空白任务卡片
             self._add_task()
             return
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            for item in data:
-                self._add_task(item)
+            if isinstance(data, dict):
+                saved = data.get("settings", {})
+                self._global_settings.update(saved)
+                self.chk_auto_minimize.setChecked(
+                    self._global_settings.get("auto_minimize", False)
+                )
+                for item in data.get("tasks", []):
+                    self._add_task(item)
+            else:
+                self._add_task()
         except Exception as e:
             logger.error(f"加载配置失败: {e}")
             self._add_task()
 
     def closeEvent(self, event) -> None:
         self._unregister_f8_hotkey()
+        self._global_settings["auto_minimize"] = self.chk_auto_minimize.isChecked()
         if self._engine and self._engine.isRunning():
             self._engine.stop()
             self._engine.wait(3000)
