@@ -1,9 +1,30 @@
+# Python
 __pycache__/
-exe_dist/
-.claude/
-*.spec
-build/
+*.py[cod]
+*.pyo
+*.egg-info/
 dist/
-*.pyc
+build/
+*.spec
+
+# 运行时生成
 config.json
 screenshots/
+
+# 打包产物
+软件本体/
+exe_dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude
+.claude/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -136,6 +136,25 @@ def click_in_region(x: int, y: int, w: int, h: int, move_speed: float = 1.0, cli
     _real_click(click_speed)
 
 
+def click_in_regions(
+    regions: list,
+    move_speed: float = 1.0,
+    click_speed: float = 1.0,
+) -> None:
+    """
+    从多个区域中按面积加权随机选一个, 再在其中随机取点点击.
+    大区域被选中的概率更高, 行为更自然.
+    """
+    if not regions:
+        return
+    weights = [w * h for _, _, w, h in regions]
+    x, y, w, h = random.choices(regions, weights=weights, k=1)[0]
+    tx = random.randint(x, x + w)
+    ty = random.randint(y, y + h)
+    _bezier_move(tx, ty, move_speed)
+    _real_click(click_speed)
+
+
 def click_in_region_multi(
     x: int, y: int, w: int, h: int,
     count: int,

@@ -8,6 +8,9 @@
   - get_region() -> tuple[int, int, int, int] | None
     阻塞调用, 弹出选择窗口, 等待用户操作完成后返回结果.
     返回 (x, y, w, h) 或 None(用户取消时).
+
+  - get_regions() -> list[tuple[int, int, int, int]] | None
+    多选模式: 连续框选多个区域, Enter 确认, Backspace 回撤, Esc 取消.
 """
 
 from PyQt6.QtWidgets import QWidget, QApplication
@@ -23,8 +26,11 @@ class _OverlayWidget(QWidget):
         self._start_pos: QPoint | None = None
         self._end_pos: QPoint | None = None
         self._dragging = False
-        self._result: tuple[int, int, int, int] | None = None
+        self._result = None
         self._loop = QEventLoop()
+        # ---- 多选模式 ----
+        self._multi_mode = False
+        self._regions: list[tuple[int, int, int, int]] = []  # 逻辑坐标
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -54,14 +60,38 @@ class _OverlayWidget(QWidget):
     def mouseReleaseEvent(self, event) -> None:
         self._end_pos = event.pos()
         self._dragging = False
-        self._finalize()
+        if self._multi_mode:
+            # 多选: 将当前区域加入列表, 重置拖拽状态, 继续框选
+            x, y, w, h = self._normalized_rect()
+            if w >= 10 and h >= 10:
+                self._regions.append((x, y, w, h))
+            self._start_pos = None
+            self._end_pos = None
+            self.update()
+        else:
+            self._finalize()
 
     # ---- 键盘事件 ----
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Escape:
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
             self._result = None
             self._close_and_exit()
+        elif self._multi_mode and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._regions:
+                ratio = self.devicePixelRatioF()
+                self._result = [
+                    (int(x * ratio), int(y * ratio), int(w * ratio), int(h * ratio))
+                    for x, y, w, h in self._regions
+                ]
+            else:
+                self._result = None
+            self._close_and_exit()
+        elif self._multi_mode and key == Qt.Key.Key_Backspace:
+            if self._regions:
+                self._regions.pop()
+                self.update()
 
     # ---- 关闭事件 ----
 
@@ -80,7 +110,18 @@ class _OverlayWidget(QWidget):
         # 顶部居中提示文字, 白色带黑色描边
         self._draw_prompt_text(painter)
 
-        # 仅在用户开始拖拽后绘制红色矩形
+        if self._multi_mode:
+            # 绘制已确认的区域 (蓝色填充 + 边框 + 序号)
+            for i, (x, y, w, h) in enumerate(self._regions):
+                painter.fillRect(x, y, w, h, QColor(0, 120, 255, 30))
+                painter.setPen(QPen(QColor(0, 120, 255), 2))
+                painter.drawRect(x, y, w, h)
+                # 序号标签
+                painter.setFont(QFont("Microsoft YaHei", 12))
+                painter.setPen(QColor(255, 255, 255))
+                painter.drawText(x + 4, y + 18, str(i + 1))
+
+        # 当前拖拽矩形 (红色) — 单选/多选通用
         if self._start_pos is not None and self._end_pos is not None:
             x, y, w, h = self._normalized_rect()
             # 内部填充: 半透明红色
@@ -92,7 +133,11 @@ class _OverlayWidget(QWidget):
 
     def _draw_prompt_text(self, painter: QPainter) -> None:
         """绘制顶部居中提示文字(白色 + 黑色描边)."""
-        text = "拖拽鼠标划定点击区域, 按 Esc 取消"
+        if self._multi_mode:
+            count = len(self._regions)
+            text = f"拖拽框选区域 | Enter 确认 | Backspace 回撤 | Esc 取消 (已选 {count} 个)"
+        else:
+            text = "拖拽鼠标划定点击区域, 按 Esc 取消"
         font = QFont("Microsoft YaHei", 16)
         painter.setFont(font)
 
@@ -135,7 +180,7 @@ class _OverlayWidget(QWidget):
 
     # ---- 对外暴露的方法 ----
 
-    def run_blocking(self) -> tuple[int, int, int, int] | None:
+    def run_blocking(self):
         """显示窗口并进入阻塞事件循环, 窗口关闭后返回结果."""
         self.show()
         self.activateWindow()
@@ -151,4 +196,14 @@ def get_region() -> tuple[int, int, int, int] | None:
     内部使用独立 QEventLoop 实现阻塞等待.
     """
     overlay = _OverlayWidget()
+    return overlay.run_blocking()
+
+
+def get_regions() -> list[tuple[int, int, int, int]] | None:
+    """
+    多选模式: 连续框选多个区域, Enter 确认, Backspace 回撤, Esc 取消.
+    返回区域列表或 None(用户取消时).
+    """
+    overlay = _OverlayWidget()
+    overlay._multi_mode = True
     return overlay.run_blocking()
