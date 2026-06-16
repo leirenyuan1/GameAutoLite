@@ -64,14 +64,17 @@ class SideBar(QWidget):
         self.nav_tasks = NavItem("📋", "任务列表")
         self.nav_stop = NavItem("🛑", "停止条件")
         self.nav_settings = NavItem("⚙", "全局设置")
+        self.nav_remote = NavItem("📱", "远程监控")  # 新增
         self.nav_tasks.clicked.connect(lambda: self._on_nav(0))
         self.nav_stop.clicked.connect(lambda: self._on_nav(1))
         self.nav_settings.clicked.connect(lambda: self._on_nav(2))
+        self.nav_remote.clicked.connect(lambda: self._on_nav(3))  # 新增
         self.nav_tasks.set_selected(True)
 
         nav_layout.addWidget(self.nav_tasks)
         nav_layout.addWidget(self.nav_stop)
         nav_layout.addWidget(self.nav_settings)
+        nav_layout.addWidget(self.nav_remote)  # 新增
         nav_layout.addStretch(1)
 
         layout.addWidget(nav_area, 1)
@@ -131,6 +134,7 @@ class SideBar(QWidget):
         self.nav_tasks.set_selected(index == 0)
         self.nav_stop.set_selected(index == 1)
         self.nav_settings.set_selected(index == 2)
+        self.nav_remote.set_selected(index == 3)  # 新增
         self.navigate.emit(index)
 
     def set_engine_running(self, running: bool) -> None:
