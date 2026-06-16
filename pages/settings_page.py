@@ -2,12 +2,12 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QIntValidator
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QSlider, QComboBox, QLineEdit, QFrame, QScrollArea,
-    QSizePolicy,
+    QSizePolicy, QDialog,
 )
 
 from styles.colors import (
@@ -21,9 +21,12 @@ if TYPE_CHECKING:
 
 
 class SettingsPage(QWidget):
+    hotkeys_changed = pyqtSignal(list)  # 类属性
+
     def __init__(self, main_win: 'MainWindow', parent=None):
         super().__init__(parent)
         self._main_win = main_win
+        self._hotkeys: list[dict] = []
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -164,10 +167,32 @@ class SettingsPage(QWidget):
         # 分组 3 — 快捷键与窗口
         hotkey_card, hotkey_layout = make_settings_card("快捷键与窗口")
 
-        self.chk_f8 = QCheckBox("启用 F8 快捷键启停")
-        self.chk_f8.setChecked(True)
-        self.chk_f8.toggled.connect(self._main_win._on_f8_toggled)
-        hotkey_layout.addWidget(self.chk_f8)
+        self.chk_hotkeys_enabled = QCheckBox("启用快捷键启停")
+        # 正确顺序：先 blockSignals + setChecked，再连接信号
+        self.chk_hotkeys_enabled.blockSignals(True)
+        self.chk_hotkeys_enabled.setChecked(True)
+        self.chk_hotkeys_enabled.blockSignals(False)
+        self.chk_hotkeys_enabled.toggled.connect(self._on_hotkeys_enabled_toggled)
+        hotkey_layout.addWidget(self.chk_hotkeys_enabled)
+
+        # 快捷键列表 UI
+        self._hotkey_list_widget = QWidget()
+        self._hotkey_list_layout = QVBoxLayout(self._hotkey_list_widget)
+        self._hotkey_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._hotkey_list_layout.setSpacing(4)
+        hotkey_layout.addWidget(self._hotkey_list_widget)
+
+        self._btn_add_hotkey = QPushButton("+ 添加快捷键")
+        self._btn_add_hotkey.setFixedHeight(28)
+        self._btn_add_hotkey.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid {CLR_CARD_BORDER};
+                border-radius: 4px; color: {CLR_TEXT_SUB}; font-size: 12px;
+            }}
+            QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
+        """)
+        self._btn_add_hotkey.clicked.connect(self._on_add_hotkey)
+        hotkey_layout.addWidget(self._btn_add_hotkey)
 
         self.chk_top = QCheckBox("📌 窗口置顶")
         self.chk_top.setChecked(False)
@@ -291,4 +316,117 @@ class SettingsPage(QWidget):
         # self._stack.addWidget(page)  # 由 MainWindow._setup_ui 负责 addWidget
 
     # ---- 悬浮窗控制 ----
+
+    # ---- 快捷键管理 ----
+
+    def populate_hotkeys(self, hotkeys: list[dict]) -> None:
+        """用配置数据填充快捷键列表 UI。"""
+        # 注意：这里是共享引用，不是拷贝
+        # _hotkeys 直接引用 _global_settings["hotkeys"]，修改 _hotkeys 里的 dict 会同步到 _global_settings
+        # 这是有意设计 — closeEvent 时 _global_settings 被统一保存到 config.json
+        self._hotkeys = hotkeys
+        self._rebuild_hotkey_list()
+
+    def _rebuild_hotkey_list(self) -> None:
+        """重建快捷键列表 UI。"""
+        # 清空旧的 widget — 使用 setParent(None) 立即断开，不用 deleteLater()
+        while self._hotkey_list_layout.count():
+            item = self._hotkey_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+        self._hotkey_rows: list[QWidget] = []
+        # 为每条快捷键创建一行
+        enabled = self.chk_hotkeys_enabled.isChecked()
+        for hotkey in self._hotkeys:
+            row = self._create_hotkey_row(hotkey)
+            row.setEnabled(enabled)
+            self._hotkey_list_layout.addWidget(row)
+            self._hotkey_rows.append(row)
+
+    def _set_hotkey_list_enabled(self, enabled: bool) -> None:
+        """启用/禁用整个快捷键列表。"""
+        if hasattr(self, "_hotkey_rows"):
+            for row in self._hotkey_rows:
+                row.setEnabled(enabled)
+
+    def _create_hotkey_row(self, hotkey: dict) -> QWidget:
+        """创建单条快捷键的 UI 行。"""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        chk = QCheckBox()
+        chk.setStyleSheet(f"""
+            QCheckBox {{
+                color: {CLR_TEXT_MAIN}; font-size: 12px;
+                spacing: 6px;
+            }}
+            QCheckBox::indicator {{
+                width: 16px; height: 16px;
+            }}
+        """)
+        # 必须 blockSignals：setChecked 会 emit toggled，否则 populate_hotkeys 会触发信号链
+        chk.blockSignals(True)
+        chk.setChecked(hotkey.get("enabled", True))
+        chk.blockSignals(False)
+        chk.toggled.connect(lambda checked, k=hotkey["key"]: self._on_hotkey_toggled(k, checked))
+        layout.addWidget(chk)
+
+        # 快捷键名称徽章（淡蓝色底纹）
+        badge = QLabel(hotkey["key"])
+        badge.setStyleSheet(f"""
+            QLabel {{
+                background: #E8F4FD; color: #2980B9;
+                border-radius: 4px; padding: 2px 8px;
+                font-size: 12px; font-weight: bold;
+            }}
+        """)
+        layout.addWidget(badge)
+
+        layout.addStretch(1)
+
+        btn_del = QPushButton("×")
+        btn_del.setFixedWidth(30)
+        btn_del.setFixedHeight(24)
+        btn_del.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: none; color: {CLR_TEXT_SUB}; font-size: 14px; }}
+            QPushButton:hover {{ color: #E74C3C; }}
+        """)
+        btn_del.clicked.connect(lambda _, k=hotkey["key"]: self._on_remove_hotkey(k))
+        layout.addWidget(btn_del)
+
+        return row
+
+    def _on_hotkeys_enabled_toggled(self, checked: bool) -> None:
+        """全局启用/禁用快捷键。"""
+        # 必须先写入 _global_settings，再 emit 信号
+        self._main_win._global_settings["hotkeys_enabled"] = checked
+        self._set_hotkey_list_enabled(checked)
+        self.hotkeys_changed.emit(self._hotkeys)
+
+    def _on_hotkey_toggled(self, key: str, checked: bool) -> None:
+        """单个快捷键启用/禁用。"""
+        for h in self._hotkeys:
+            if h["key"] == key:
+                h["enabled"] = checked
+                break
+        self.hotkeys_changed.emit(self._hotkeys)
+
+    def _on_add_hotkey(self) -> None:
+        """添加快捷键。"""
+        from widgets.hotkey_capture_dialog import HotkeyCaptureDialog
+        existing = [h["key"] for h in self._hotkeys]
+        dlg = HotkeyCaptureDialog(existing_keys=existing, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            key = dlg.get_hotkey_string()
+            self._hotkeys.append({"key": key, "enabled": True})
+            self._rebuild_hotkey_list()
+            self.hotkeys_changed.emit(self._hotkeys)
+
+    def _on_remove_hotkey(self, key: str) -> None:
+        """删除快捷键。"""
+        # 使用[:]原地修改，保持与 _global_settings["hotkeys"] 的共享引用
+        self._hotkeys[:] = [h for h in self._hotkeys if h["key"] != key]
+        self._rebuild_hotkey_list()
+        self.hotkeys_changed.emit(self._hotkeys)
 

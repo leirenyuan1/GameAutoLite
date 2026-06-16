@@ -10,7 +10,7 @@
 - **真实按压点击** — mouseDown → 随机停留 50~150ms → mouseUp，杜绝封号风险
 - **可视区域选择** — 半透明全屏遮罩拖拽划定点击区域，所见即所得
 - **截图即上传** — 内置屏幕截图工具，直接框选游戏画面作为识别模板
-- **F8 全局热键** — 游戏内一键启停，无需切换窗口
+- **自定义快捷键** — 支持单键（F8）和组合键（Ctrl+Shift+P），可同时绑定多个快捷键
 
 ### 任务管理
 - **多任务队列** — 支持多个识别任务同时运行，按顺序循环扫描
@@ -43,6 +43,13 @@
 - **方案嵌入图片** — 导出时图片 Base64 嵌入 .galt 文件，导入时智能检测还原
 - **停止条件导出** — 方案导出支持保存停止条件配置
 
+### 远程监控
+- **手机扫码连接** — 生成二维码，手机浏览器扫码即可连接
+- **实时状态查看** — 手机端实时显示引擎运行状态
+- **远程启停控制** — 手机端一键启停引擎
+- **远程截图查看** — 手机端查看当前屏幕截图
+- **局域网访问** — 无需互联网，同一 WiFi 下即可使用
+
 ### 其他
 - **全局设置** — 图像扫描间隔、鼠标移动/点击速度可调（0.5X~2.0X）
 - **开始后自动最小化** — 勾选后启动引擎自动最小化，停止时自动恢复
@@ -57,6 +64,7 @@
 | **OpenCV + mss** | 屏幕截图与模板匹配 |
 | **pywin32** | Windows API 鼠标控制 |
 | **keyboard** | 全局热键注册 |
+| **qrcode** | 远程监控二维码生成 |
 
 ## 📁 项目结构
 
@@ -66,10 +74,11 @@ GameAutoLite/
 ├── main_window.py         # 主窗口逻辑
 ├── engine.py              # 引擎调度线程
 ├── config_manager.py      # 配置持久化与方案导入导出
-├── hotkey_manager.py      # F8 热键管理
+├── hotkey_manager.py      # 多热键管理器
 ├── image_engine.py        # 截图 + OpenCV 模板匹配
 ├── mouse_controller.py    # 贝塞尔曲线移动 + 真实按压点击
 ├── overlay_selector.py    # 全屏遮罩拖拽选区工具
+├── remote_server.py       # 远程监控 HTTP 服务器
 ├── icon.ico               # 软件图标
 ├── requirements.txt       # Python 依赖清单
 │
@@ -82,12 +91,14 @@ GameAutoLite/
 │   ├── task_card.py       # 可折叠任务卡片
 │   ├── sidebar.py         # 左侧边栏导航
 │   ├── floating_widget.py # 悬浮状态卡片
+│   ├── hotkey_capture_dialog.py # 快捷键捕获对话框
 │   └── nav_item.py        # 导航菜单项
 │
 └── pages/                 # 页面模块
     ├── task_list_page.py      # 任务列表页
     ├── stop_conditions_page.py # 停止条件页
     ├── settings_page.py       # 全局设置页
+    ├── remote_monitor_page.py # 远程监控页
     └── utils.py               # 页面工具函数
 ```
 
@@ -143,8 +154,9 @@ pyinstaller --onefile --windowed --icon=icon.ico --name=GameAutoLite --add-data 
 4. **调整匹配精确度** — 滑块设置 50%~99%，越高越精确但越难匹配
 5. **配置延迟** — 设置识别后的随机延迟范围（默认 200~500ms）
 6. **设置停止条件**（可选） — 切换到「停止条件」页面，按需配置自动停止规则
-7. **启动** — 点击绿色「▶ 开始」按钮或按 F8，引擎开始循环扫描
-8. **停止** — 点击红色「⏹ 停止」按钮或按 F8
+7. **启动** — 点击绿色「▶ 开始」按钮或按 F8（可自定义），引擎开始循环扫描
+8. **停止** — 点击红色「⏹ 停止」按钮或按快捷键
+9. **远程监控** — 切换到「远程监控」页面，手机扫码即可远程控制
 
 > 💡 提示：如点击无效，请右键本软件选择「以管理员身份运行」
 
@@ -157,6 +169,11 @@ pyinstaller --onefile --windowed --icon=icon.ico --name=GameAutoLite --add-data 
 - 点击拆分为 **按下 → 随机延迟 → 松开**，模拟真实点击停留
 
 ## 📝 版本历史
+
+### v3.1
+- 新增远程监控功能（手机扫码连接、实时状态、远程启停、远程截图）
+- 新增自定义快捷键（支持单键/组合键、多快捷键绑定、全局启用/禁用开关）
+- 兼容旧版配置（f8_enabled 自动迁移为 hotkeys 格式）
 
 ### v3.0
 - 新增停止条件系统（任务执行次数/运行时间/识别指定图片/无匹配超时）
@@ -199,5 +216,5 @@ pyinstaller --onefile --windowed --icon=icon.ico --name=GameAutoLite --add-data 
 
 感谢以下工具与 AI 模型在本项目开发过程中提供的支持：
 
-- **开发环境与工具**：VS Code, Claude Code, CC Switch
+- **开发环境与工具**：VS Code, Claude Code, CC Switch, MiMo Code
 - **AI 辅助编程与对话**：Xiaomi MiMo, Claude, DeepSeek, Gemini, 豆包
