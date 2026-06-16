@@ -5,3 +5,4 @@ pywin32
 keyboard
 numpy
 pyautogui
+qrcode[pil]

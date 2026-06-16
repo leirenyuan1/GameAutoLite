@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import threading
 
 from PyQt6.QtCore import (
     Qt, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG,
@@ -56,7 +57,7 @@ class MainWindow(QMainWindow):
         self._task_cards: list[CollapsibleTaskCard] = []
         self._engine: EngineThread | None = None
         self._hotkey_mgr = HotkeyManager(parent=self)
-        self._f8_registered = self._hotkey_mgr.register(self, "_toggle_engine")
+        # L60 已完全删除 — 不注册热键，等 _load_config 后注册
         self._auto_minimized = False
         self._stop_by_condition = False  # 条件停止标志
         self._manual_stop = False  # 手动停止标志
@@ -64,6 +65,17 @@ class MainWindow(QMainWindow):
         self._suppress_floating = False  # 抑制悬浮窗（截图/选取区域时）
         self._floating_widget: FloatingWidget | None = None  # 悬浮窗实例（延迟初始化）
         self._global_settings: dict = {"scan_interval": 200, "auto_minimize": False, "move_speed": 1.0, "click_speed": 1.0, "show_floating_widget": False, "always_show_floating": False}
+
+        # 远程监控相关属性
+        self._remote_server = None
+        self._remote_thread = None
+        self._remote_status_lock = threading.Lock()
+        self._remote_status_cache = {
+            "icon1": "⚡", "line1": "就绪",
+            "icon2": "🖱", "line2": "—",
+            "icon3": "⏱", "line3": "—",
+            "is_running": False
+        }
 
         # 预览定时器（复用同一个实例，避免内存泄漏）
         self._preview_timer = QTimer(self)
@@ -113,9 +125,14 @@ class MainWindow(QMainWindow):
         # ========== 页面 2: 全局设置 ==========
         self._settings_page = SettingsPage(self)
 
+        # ========== 页面 3: 远程监控 ==========
+        from pages.remote_monitor_page import RemoteMonitorPage
+        self._remote_monitor_page = RemoteMonitorPage(self)
+
         self._stack.addWidget(self._task_list_page)          # index 0
         self._stack.addWidget(self._stop_conditions_page)    # index 1
         self._stack.addWidget(self._settings_page)           # index 2
+        self._stack.addWidget(self._remote_monitor_page)     # index 3
 
         # ======== 快捷引用（过渡期） ========
         # 任务列表页
@@ -143,7 +160,7 @@ class MainWindow(QMainWindow):
         self.edit_stop_idle_minutes = self._stop_conditions_page.edit_stop_idle_minutes
 
         # 全局设置页
-        self.chk_f8 = self._settings_page.chk_f8
+        self._settings_page.hotkeys_changed.connect(self._on_hotkeys_changed)
         self.chk_top = self._settings_page.chk_top
         self.chk_auto_minimize = self._settings_page.chk_auto_minimize
         self.edit_scan_interval = self._settings_page.edit_scan_interval
@@ -388,6 +405,21 @@ class MainWindow(QMainWindow):
             self._floating_widget.sync_from_sidebar(self.sidebar)
 
         self._restore_window_if_auto_minimized()
+        self._update_remote_status_cache()  # 插入点D
+
+    def _update_remote_status_cache(self) -> None:
+        """更新远程监控状态缓存（线程安全）"""
+        with self._remote_status_lock:
+            sb = self.sidebar
+            self._remote_status_cache = {
+                "icon1": sb.status_icon1.text(),
+                "line1": sb.status_line1.text(),
+                "icon2": sb.status_icon2.text(),
+                "line2": sb.status_line2.text(),
+                "icon3": sb.status_icon3.text(),
+                "line3": sb.status_line3.text(),
+                "is_running": sb.btn_toggle.text().startswith("⏹")
+            }
 
     # 设置卡片计数器，用于生成唯一的 objectName
     _settings_card_counter = 0
@@ -547,28 +579,16 @@ class MainWindow(QMainWindow):
     def _on_sidebar_navigate(self, index: int) -> None:
         self._stack.setCurrentIndex(index)
 
-    # ---- F8 热键 ----
+    # ---- 快捷键管理 ----
 
-    def _register_f8_hotkey(self) -> None:
-        # _f8_registered 与 _hotkey_mgr.is_registered 双重维护：
-        # _f8_registered 供 _on_f8_toggled 读取（决定是否反转 checkbox），
-        # _hotkey_mgr.is_registered 供 HotkeyManager 内部使用。
-        # 两者始终保持一致——register() 返回 True/False 后立即同步赋值。
-        self._f8_registered = self._hotkey_mgr.register(self, "_toggle_engine")
-
-    def _unregister_f8_hotkey(self) -> None:
-        self._hotkey_mgr.unregister()
-        self._f8_registered = False
-
-    def _on_f8_toggled(self, checked: bool) -> None:
-        if checked:
-            self._register_f8_hotkey()
-            if not self._f8_registered:
-                self.chk_f8.blockSignals(True)
-                self.chk_f8.setChecked(False)
-                self.chk_f8.blockSignals(False)
-        else:
-            self._unregister_f8_hotkey()
+    @pyqtSlot(list)
+    def _on_hotkeys_changed(self, hotkeys: list[dict]) -> None:
+        """设置页快捷键变更时调用。"""
+        self._hotkey_mgr.unregister_all()
+        enabled_hotkeys = [h for h in hotkeys if h.get("enabled", True)]
+        if enabled_hotkeys and self._global_settings.get("hotkeys_enabled", True):
+            self._hotkey_mgr.register_all(self, "_toggle_engine", enabled_hotkeys)
+        self._global_settings["hotkeys"] = hotkeys
 
     def _on_top_toggled(self, checked: bool) -> None:
         """切换窗口置顶状态."""
@@ -580,12 +600,6 @@ class MainWindow(QMainWindow):
             self.setWindowFlags(flags & ~Qt.WindowType.WindowStaysOnTopHint)
         self.setGeometry(geom)
         self.show()
-
-    def _on_f8_hotkey(self) -> None:
-        """热键回调在 keyboard 的钩子线程中执行, 必须转发到主线程."""
-        QMetaObject.invokeMethod(
-            self, "_toggle_engine", Qt.ConnectionType.QueuedConnection
-        )
 
     # ---- 引擎启停 ----
 
@@ -628,6 +642,7 @@ class MainWindow(QMainWindow):
             self.sidebar.status_icon3.setText("⏱")
             if self._floating_widget and self._floating_widget.isVisible():
                 self._floating_widget.sync_from_sidebar(self.sidebar)
+            self._update_remote_status_cache()  # 插入点E1
             return
 
         # 收集所有配置完整的任务
@@ -643,6 +658,7 @@ class MainWindow(QMainWindow):
             # 同步到悬浮窗
             if self._floating_widget and self._floating_widget.isVisible():
                 self._floating_widget.sync_from_sidebar(self.sidebar)
+            self._update_remote_status_cache()  # 插入点E2
             return
 
         # ---- 停止条件处理 ----
@@ -756,6 +772,7 @@ class MainWindow(QMainWindow):
 
         elif "已停止" in text or "无可用任务" in text:
             if self._stop_by_condition:
+                self._update_remote_status_cache()  # 插入点A
                 return
             sb.status_line1.setText("就绪")
             sb.status_icon1.setText("⚡")
@@ -770,6 +787,7 @@ class MainWindow(QMainWindow):
         # 同步到悬浮窗（如果可见）
         if self._floating_widget and self._floating_widget.isVisible():
             self._floating_widget.sync_from_sidebar(sb)
+        self._update_remote_status_cache()  # 插入点B
 
     def _on_engine_finished(self) -> None:
         if self._stop_by_condition:
@@ -792,6 +810,7 @@ class MainWindow(QMainWindow):
             self._floating_widget.sync_from_sidebar(sb)
 
         self._restore_window_if_auto_minimized()
+        self._update_remote_status_cache()  # 插入点C
 
     def _collect_task_configs(self) -> list[dict]:
         configs = []
@@ -976,7 +995,6 @@ class MainWindow(QMainWindow):
         speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
         self._global_settings["move_speed"] = speed_options[self.combo_move_speed.currentIndex()]
         self._global_settings["click_speed"] = speed_options[self.combo_click_speed.currentIndex()]
-        self._global_settings["f8_enabled"] = self.chk_f8.isChecked()
         self._global_settings["always_on_top"] = self.chk_top.isChecked()
         self._global_settings["auto_minimize"] = self.chk_auto_minimize.isChecked()
         self._global_settings["show_floating_widget"] = self.chk_floating.isChecked()
@@ -1170,16 +1188,47 @@ class MainWindow(QMainWindow):
     def _load_config(self) -> None:
         data = load_config()
         if data is None:
+            # 首次使用：设置默认快捷键
+            # 安全：populate_hotkeys 内部 _create_hotkey_row 对 chk 使用 blockSignals
+            # 不会触发 hotkeys_changed 信号链
+            self._global_settings["hotkeys"] = [{"key": "f8", "enabled": True}]
+            self._global_settings["hotkeys_enabled"] = True
+            self._settings_page.chk_hotkeys_enabled.blockSignals(True)
+            self._settings_page.chk_hotkeys_enabled.setChecked(True)
+            self._settings_page.chk_hotkeys_enabled.blockSignals(False)
+            self._settings_page.populate_hotkeys(self._global_settings["hotkeys"])
+            self._hotkey_mgr.register_all(self, "_toggle_engine", self._global_settings["hotkeys"])
             self._add_task()
             return
         if isinstance(data, dict):
                 saved = data.get("settings", {})
                 self._global_settings.update(saved)
 
-                # 同步 UI 控件 - 复选框
-                self.chk_f8.setChecked(
-                    self._global_settings.get("f8_enabled", True)
+                # 兼容旧配置：f8_enabled → hotkeys 迁移
+                if "hotkeys" not in self._global_settings:
+                    if self._global_settings.get("f8_enabled", True):
+                        self._global_settings["hotkeys"] = [{"key": "f8", "enabled": True}]
+                    else:
+                        self._global_settings["hotkeys"] = []
+                # 设置 hotkeys_enabled 默认值
+                if "hotkeys_enabled" not in self._global_settings:
+                    self._global_settings["hotkeys_enabled"] = True
+
+                # 填充设置页快捷键列表 UI
+                self._settings_page.chk_hotkeys_enabled.blockSignals(True)
+                self._settings_page.chk_hotkeys_enabled.setChecked(
+                    self._global_settings.get("hotkeys_enabled", True)
                 )
+                self._settings_page.chk_hotkeys_enabled.blockSignals(False)
+                self._settings_page.populate_hotkeys(self._global_settings["hotkeys"])
+
+                # 注册热键
+                if self._global_settings.get("hotkeys_enabled", True):
+                    enabled = [h for h in self._global_settings["hotkeys"] if h.get("enabled", True)]
+                    if enabled:
+                        self._hotkey_mgr.register_all(self, "_toggle_engine", enabled)
+
+                # 同步 UI 控件 - 复选框
                 self.chk_top.setChecked(
                     self._global_settings.get("always_on_top", False)
                 )
@@ -1335,7 +1384,7 @@ class MainWindow(QMainWindow):
         self._resize_grip.move(size.width() - 16, size.height() - 16)
 
     def closeEvent(self, event) -> None:
-        self._unregister_f8_hotkey()
+        self._hotkey_mgr.unregister_all()
         # 提前设置，防止 changeEvent 触发 fade_hide
         self._suppress_floating = True
         # 同步所有设置到 _global_settings
@@ -1347,6 +1396,13 @@ class MainWindow(QMainWindow):
                 pass
             self._engine.stop()
             self._engine.wait(3000)
+        # ===== 新增：停止远程监控服务器（异步，不阻塞UI）=====
+        if self._remote_server:
+            from remote_server import stop_server_async
+            stop_server_async(self._remote_server, self._remote_thread)
+            self._remote_server = None
+            self._remote_thread = None
+        # ===== 新增结束 =====
         # 保存悬浮窗位置并清理
         if self._floating_widget:
             if self._floating_widget.isVisible() or self._floating_widget._last_pos:
