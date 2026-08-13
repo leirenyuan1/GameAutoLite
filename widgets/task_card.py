@@ -526,7 +526,12 @@ class CollapsibleTaskCard(QFrame):
         os.makedirs(save_dir, exist_ok=True)
         timestamp = int(time.time() * 1000)
         save_path = os.path.join(save_dir, f"capture_{timestamp}.png")
-        cv2.imwrite(save_path, img)
+        # imwrite 不支持中文路径，改用 imencode + tofile（numpy 原生写入支持中文）
+        success, encoded = cv2.imencode(".png", img)
+        if not success:
+            logger.error("截图编码失败")
+            return
+        encoded.tofile(save_path)
 
         self._image_path = save_path
         pixmap = QPixmap(save_path)
@@ -539,20 +544,33 @@ class CollapsibleTaskCard(QFrame):
         self._update_image_warning()
 
     def _on_click_on_match_changed(self, checked: bool) -> None:
-        if not checked:
-            return  # 只处理勾选事件, 避免信号循环
-        self._click_on_match = True
-        self._multi_region = False
-        self.chk_multi_region.blockSignals(True)
-        self.chk_multi_region.setChecked(False)
-        self.chk_multi_region.blockSignals(False)
-        # 更新 UI
-        self.btn_region.setText("⊕ 设定")
-        self.btn_region.setDisabled(True)
-        self.label_region.setText("跟随识别图")
-        self.label_region.setStyleSheet(
-            f"color: {CLR_BTN_PRIMARY}; font-weight: bold; font-size: 12px;"
-        )
+        if checked:
+            self._click_on_match = True
+            self._multi_region = False
+            self.chk_multi_region.blockSignals(True)
+            self.chk_multi_region.setChecked(False)
+            self.chk_multi_region.blockSignals(False)
+            # 更新 UI
+            self.btn_region.setText("⊕ 设定")
+            self.btn_region.setDisabled(True)
+            self.label_region.setText("跟随识别图")
+            self.label_region.setStyleSheet(
+                f"color: {CLR_BTN_PRIMARY}; font-weight: bold; font-size: 12px;"
+            )
+        else:
+            # 取消勾选：恢复手动设定区域模式（与 _on_multi_region_changed 的 False 分支对齐）
+            self._click_on_match = False
+            self.btn_region.setDisabled(False)
+            self.btn_region.setText("⊕ 设定")
+            if self._region:
+                x, y, w, h = self._region
+                self.label_region.setText(f"{x},{y}  {w}×{h}")
+                self.label_region.setStyleSheet(
+                    f"color: {CLR_TEXT_MAIN}; font-weight: bold; font-size: 12px;"
+                )
+            else:
+                self.label_region.setText("未设定")
+                self.label_region.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px;")
 
     def _on_multi_region_changed(self, checked: bool) -> None:
         if checked:
@@ -636,10 +654,7 @@ class CollapsibleTaskCard(QFrame):
                 self.label_region.setStyleSheet(
                     f"color: {CLR_TEXT_MAIN}; font-weight: bold; font-size: 12px;"
                 )
-            else:
-                self.label_region.setText("未设定")
-                self.label_region.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px;")
-                self._region = None
+            # Esc 取消时保留已有区域，与多选模式行为对齐（task_card.py 多选分支注释）
 
     def _validate_delay(self) -> None:
         try:
@@ -696,6 +711,8 @@ class CollapsibleTaskCard(QFrame):
             self._name_has_error = False
             self._set_name_normal_style()
             self._clear_sibling_errors(main_win)
+            if main_win:
+                main_win._refresh_stop_task_combo()  # 名称变更后同步条件一下拉框
             return
 
         if main_win:
@@ -718,6 +735,8 @@ class CollapsibleTaskCard(QFrame):
             self._clear_sibling_errors(main_win)
 
         self._set_name_normal_style()
+        if main_win:
+            main_win._refresh_stop_task_combo()  # 名称变更后同步条件一下拉框
 
     def _clear_sibling_errors(self, main_win) -> None:
         """恢复所有与自己不同名且确实不再重复的兄弟卡片样式."""
@@ -776,7 +795,7 @@ class CollapsibleTaskCard(QFrame):
 
     def to_dict(self) -> dict:
         return {
-            "name": self.name_edit.text(),
+            "name": self.name_edit.text().strip(),
             "image_path": self._image_path or "",
             "threshold": self.slider.value(),
             "region": list(self._region) if self._region else None,
@@ -791,7 +810,7 @@ class CollapsibleTaskCard(QFrame):
         }
 
     def from_dict(self, data: dict) -> None:
-        self.name_edit.setText(data.get("name", ""))
+        self.name_edit.setText((data.get("name") or "").strip())  # or "" 防 None
         self._image_path = data.get("image_path") or None
         if self._image_path:
             pixmap = QPixmap(self._image_path)

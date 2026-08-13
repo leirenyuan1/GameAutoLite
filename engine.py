@@ -151,6 +151,7 @@ class EngineThread(QThread):
                                     rx, ry, rw, rh, count=click_count,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
+                                    stop_event=self._stop_event,
                                 )
                         else:
                             rx, ry, rw, rh = cfg["region"]
@@ -165,6 +166,7 @@ class EngineThread(QThread):
                                     rx, ry, rw, rh, count=click_count,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
+                                    stop_event=self._stop_event,
                                 )
                     except Exception as e:
                         logger.error(f"点击失败: {e}")

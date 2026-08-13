@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self._auto_minimized = False
         self._stop_by_condition = False  # 条件停止标志
         self._manual_stop = False  # 手动停止标志
+        self._engine_dying = False  # 旧引擎线程退出中标志（wait 超时兜底防御）
         self._moveAnimating = False
         self._suppress_floating = False  # 抑制悬浮窗（截图/选取区域时）
         self._floating_widget: FloatingWidget | None = None  # 悬浮窗实例（延迟初始化）
@@ -277,7 +278,12 @@ class MainWindow(QMainWindow):
         os.makedirs(save_dir, exist_ok=True)
         timestamp = int(time.time() * 1000)
         save_path = os.path.join(save_dir, f"stop_capture_{timestamp}.png")
-        cv2.imwrite(save_path, img)
+        # imwrite 不支持中文路径，改用 imencode + tofile（numpy 原生写入支持中文）
+        success, encoded = cv2.imencode(".png", img)
+        if not success:
+            logger.error("停止图片截图编码失败")
+            return
+        encoded.tofile(save_path)
         self._stop_image_path = save_path
         pixmap = QPixmap(save_path)
         self.stop_img_preview.setPixmap(pixmap.scaled(
@@ -381,7 +387,11 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._engine.stop()
-        self._engine.wait(3000)
+        if not self._engine.wait(3000):
+            # 兜底：线程未在 3 秒内退出（仅当未来新增更长的不可打断操作才会走到这里）
+            logger.error("引擎线程未在 3 秒内退出，进入等待退出状态")
+            self._engine_dying = True
+            self._engine.finished.connect(self._on_dying_engine_finished)  # 线程真正退出后再清理
 
         self._apply_condition_stop_ui()
 
@@ -615,6 +625,11 @@ class MainWindow(QMainWindow):
             self._start_engine()
 
     def _start_engine(self) -> None:
+        if self._engine_dying:
+            # 旧引擎线程尚未退出（wait 超时兜底场景），拒绝启动新引擎
+            self.sidebar.status_line1.setText("引擎正在退出")
+            logger.warning("旧引擎线程尚未退出，拒绝启动新引擎")
+            return
         # 启动前同步所有设置到 _global_settings
         self._sync_settings_to_global()
 
@@ -717,8 +732,12 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._engine.stop()
-            self._engine.wait(3000)
-        self._on_engine_finished()
+            if not self._engine.wait(3000):
+                # 兜底：线程未在 3 秒内退出（仅当未来新增更长的不可打断操作才会走到这里）
+                logger.error("引擎线程未在 3 秒内退出，进入等待退出状态")
+                self._engine_dying = True
+                self._engine.finished.connect(self._on_dying_engine_finished)  # 线程真正退出后再清理
+        self._on_engine_finished()  # 幂等，超时/正常都执行，保证 UI 不卡在"运行中"
 
     def _on_status_update(self, text: str) -> None:
         sb = self.sidebar
@@ -811,6 +830,11 @@ class MainWindow(QMainWindow):
 
         self._restore_window_if_auto_minimized()
         self._update_remote_status_cache()  # 插入点C
+
+    def _on_dying_engine_finished(self) -> None:
+        """wait 超时后旧引擎线程真正退出时的清理（此时线程已结束，可安全置 None）。"""
+        self._engine = None
+        self._engine_dying = False
 
     def _collect_task_configs(self) -> list[dict]:
         configs = []
@@ -1105,6 +1129,28 @@ class MainWindow(QMainWindow):
         if msg.clickedButton() == btn_replace:
             self._clear_tasks_no_anim()
 
+        # 新增模式 + 方案的停止条件总开关启用 → 询问是否覆盖当前停止条件
+        # （export_scheme 会无条件写入 stop_conditions 字段，必须按 enabled 判断，
+        #   否则未设置停止条件的方案导入时也会 100% 弹窗）
+        apply_stop_conditions = True
+        if (msg.clickedButton() == btn_append
+                and isinstance(imported_stop_conditions, dict)
+                and imported_stop_conditions.get("enabled", False)):
+            msg_sc = self._styled_msgbox()
+            msg_sc.setWindowTitle("导入停止条件")
+            msg_sc.setText("新增方案包含停止条件，是否覆盖当前的停止条件？")
+            msg_sc.setInformativeText(
+                "是：将当前的停止条件替换为新增方案的停止条件\n"
+                "否：保留当前的停止条件，不做改动"
+            )
+            btn_sc_yes = msg_sc.addButton("是", QMessageBox.ButtonRole.AcceptRole)
+            btn_sc_no = msg_sc.addButton("否", QMessageBox.ButtonRole.RejectRole)
+            btn_sc_cancel = msg_sc.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            self._exec_msgbox_centered(msg_sc)
+            if msg_sc.clickedButton() == btn_sc_cancel:
+                return  # 中止整个导入（任务也不导入）
+            apply_stop_conditions = (msg_sc.clickedButton() == btn_sc_yes)
+
         # 导入新任务（智能检测图片）
         for item in tasks_data:
             restore_task_image(item)
@@ -1124,56 +1170,67 @@ class MainWindow(QMainWindow):
         # 刷新停止条件 combo
         self._refresh_stop_task_combo()
 
-        # 还原停止条件图片
-        restored = restore_stop_image(stop_image_filename, stop_image_data, self._stop_image_path)
-        if restored:
-            self._stop_image_path = restored
+        if apply_stop_conditions:
+            # 还原停止条件图片
+            restored = restore_stop_image(stop_image_filename, stop_image_data, self._stop_image_path)
+            if restored:
+                self._stop_image_path = restored
 
-        if self._stop_image_path and os.path.exists(self._stop_image_path):
-            pixmap = QPixmap(self._stop_image_path)
-            if not pixmap.isNull():
-                self.stop_img_preview.setPixmap(pixmap.scaled(
-                    60, 60, Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                ))
+            if self._stop_image_path and os.path.exists(self._stop_image_path):
+                pixmap = QPixmap(self._stop_image_path)
+                if not pixmap.isNull():
+                    self.stop_img_preview.setPixmap(pixmap.scaled(
+                        60, 60, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    ))
 
-        # 恢复停止条件配置（开关状态、参数值）
-        if imported_stop_conditions and isinstance(imported_stop_conditions, dict):
-            # 把还原的图片路径写入条件三
-            if self._stop_image_path and "image_match_stop" in imported_stop_conditions:
-                imported_stop_conditions["image_match_stop"]["image_path"] = self._stop_image_path
-            self._global_settings["stop_conditions"] = imported_stop_conditions
-            # 恢复 UI
-            sc = imported_stop_conditions
-            self.chk_stop_enabled.blockSignals(True)
-            self.chk_stop_enabled.setChecked(sc.get("enabled", False))
-            self.chk_stop_enabled.blockSignals(False)
+            # 恢复停止条件配置（开关状态、参数值）
+            if imported_stop_conditions and isinstance(imported_stop_conditions, dict):
+                # 把还原的图片路径写入条件三
+                if self._stop_image_path and "image_match_stop" in imported_stop_conditions:
+                    imported_stop_conditions["image_match_stop"]["image_path"] = self._stop_image_path
+                self._global_settings["stop_conditions"] = imported_stop_conditions
+                # 恢复 UI
+                sc = imported_stop_conditions
+                self.chk_stop_enabled.blockSignals(True)
+                self.chk_stop_enabled.setChecked(sc.get("enabled", False))
+                self.chk_stop_enabled.blockSignals(False)
 
-            tc = sc.get("task_exec_count", {})
-            self.chk_stop_cond1.blockSignals(True)
-            self.chk_stop_cond1.setChecked(tc.get("enabled", False))
-            self.chk_stop_cond1.blockSignals(False)
-            self.edit_stop_exec_count.setText(str(tc.get("count", 5)))
+                tc = sc.get("task_exec_count", {})
+                self.chk_stop_cond1.blockSignals(True)
+                self.chk_stop_cond1.setChecked(tc.get("enabled", False))
+                self.chk_stop_cond1.blockSignals(False)
+                self.edit_stop_exec_count.setText(str(tc.get("count", 5)))
 
-            rl = sc.get("run_time_limit", {})
-            self.chk_stop_cond2.blockSignals(True)
-            self.chk_stop_cond2.setChecked(rl.get("enabled", False))
-            self.chk_stop_cond2.blockSignals(False)
-            self.edit_stop_run_minutes.setText(str(rl.get("minutes", 10)))
+                # 恢复目标任务下拉框（导入时任务已加入 _task_cards，无需 pending 机制）
+                task_name = tc.get("task_name", "")
+                if task_name:
+                    idx = self.combo_stop_task.findText(task_name)
+                    if idx >= 0:
+                        self.combo_stop_task.setCurrentIndex(idx)
+                    elif self.chk_stop_cond1.isChecked():
+                        self.chk_stop_cond1.setChecked(False)
+                        logger.warning(f"导入方案的停止条件引用了不存在的任务「{task_name}」，已取消条件一勾选")
 
-            ims = sc.get("image_match_stop", {})
-            self.chk_stop_cond3.blockSignals(True)
-            self.chk_stop_cond3.setChecked(ims.get("enabled", False))
-            self.chk_stop_cond3.blockSignals(False)
-            self.slider_stop_threshold.setValue(ims.get("threshold", 90))
+                rl = sc.get("run_time_limit", {})
+                self.chk_stop_cond2.blockSignals(True)
+                self.chk_stop_cond2.setChecked(rl.get("enabled", False))
+                self.chk_stop_cond2.blockSignals(False)
+                self.edit_stop_run_minutes.setText(str(rl.get("minutes", 10)))
 
-            nmt = sc.get("no_match_timeout", {})
-            self.chk_stop_cond4.blockSignals(True)
-            self.chk_stop_cond4.setChecked(nmt.get("enabled", False))
-            self.chk_stop_cond4.blockSignals(False)
-            self.edit_stop_idle_minutes.setText(str(nmt.get("minutes", 5)))
+                ims = sc.get("image_match_stop", {})
+                self.chk_stop_cond3.blockSignals(True)
+                self.chk_stop_cond3.setChecked(ims.get("enabled", False))
+                self.chk_stop_cond3.blockSignals(False)
+                self.slider_stop_threshold.setValue(ims.get("threshold", 90))
 
-            self._on_stop_enabled_toggled(self.chk_stop_enabled.isChecked())
+                nmt = sc.get("no_match_timeout", {})
+                self.chk_stop_cond4.blockSignals(True)
+                self.chk_stop_cond4.setChecked(nmt.get("enabled", False))
+                self.chk_stop_cond4.blockSignals(False)
+                self.edit_stop_idle_minutes.setText(str(nmt.get("minutes", 5)))
+
+                self._on_stop_enabled_toggled(self.chk_stop_enabled.isChecked())
 
         self._save_config()
 
@@ -1349,7 +1406,11 @@ class MainWindow(QMainWindow):
 
                 self._on_stop_enabled_toggled(self.chk_stop_enabled.isChecked())
 
-                for item in data.get("tasks", []):
+                tasks_raw = data.get("tasks", [])
+                if not isinstance(tasks_raw, list):
+                    logger.error("config.json 中 tasks 字段格式不正确，已忽略任务列表")
+                    tasks_raw = []
+                for item in tasks_raw:
                     # 补全空名称
                     if not item.get("name", "").strip():
                         item["name"] = self._next_task_name()
@@ -1395,7 +1456,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._engine.stop()
-            self._engine.wait(3000)
+            if not self._engine.wait(3000):
+                logger.error("引擎线程未在 3 秒内退出，进程即将结束")
         # ===== 新增：停止远程监控服务器（异步，不阻塞UI）=====
         if self._remote_server:
             from remote_server import stop_server_async

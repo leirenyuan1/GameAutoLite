@@ -20,11 +20,13 @@ SCREENSHOTS_DIR = os.path.join(_app_dir, "screenshots")
 
 
 def save_config(settings: dict, tasks: list[dict]) -> None:
-    """将全局设置和任务列表写入 config.json。"""
+    """将全局设置和任务列表写入 config.json（原子写入，防崩溃写坏文件）。"""
     data = {"settings": settings, "tasks": tasks}
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        tmp_path = CONFIG_FILE + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, CONFIG_FILE)  # Windows 同卷下原子替换
     except Exception as e:
         logger.error(f"保存配置失败: {e}")
 
@@ -161,26 +163,25 @@ def restore_stop_image(
     current_stop_image_path: str | None,
 ) -> str | None:
     """
-    尝试还原停止条件图片，返回有效路径或 None。
+    优先还原导入文件中的停止图片；失败时 fallback 当前图片，返回有效路径或 None。
     """
-    if not stop_image_filename:
-        return current_stop_image_path
+    if stop_image_filename:
+        restored_path = os.path.join(SCREENSHOTS_DIR, stop_image_filename)
+        if os.path.exists(restored_path):
+            return restored_path
 
+        if stop_image_data:
+            try:
+                img_bytes = base64.b64decode(stop_image_data)
+                os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+                with open(restored_path, "wb") as img_f:
+                    img_f.write(img_bytes)
+                return restored_path
+            except Exception as e:
+                logger.error(f"从方案还原停止条件图片失败: {e}")
+
+    # 导入文件无图或还原失败 → 沿用当前有效图片
     if current_stop_image_path and os.path.exists(current_stop_image_path):
         return current_stop_image_path
-
-    restored_path = os.path.join(SCREENSHOTS_DIR, stop_image_filename)
-    if os.path.exists(restored_path):
-        return restored_path
-
-    if stop_image_data:
-        try:
-            img_bytes = base64.b64decode(stop_image_data)
-            os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-            with open(restored_path, "wb") as img_f:
-                img_f.write(img_bytes)
-            return restored_path
-        except Exception as e:
-            logger.error(f"从方案还原停止条件图片失败: {e}")
 
     return None

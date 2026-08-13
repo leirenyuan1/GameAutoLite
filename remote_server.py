@@ -305,14 +305,14 @@ class StatusHandler(BaseHTTPRequestHandler):
 
 def get_local_ip() -> str:
     """获取本机局域网IP地址"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        return s.getsockname()[0]
     except Exception:
         return "127.0.0.1"
+    finally:
+        s.close()
 
 
 def start_server(main_window, max_port_attempts: int = 10) -> tuple[HTTPServer, threading.Thread, int]:
