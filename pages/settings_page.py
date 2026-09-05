@@ -14,6 +14,7 @@ from styles.colors import (
     CLR_TEXT_MAIN, CLR_TEXT_SUB, CLR_CARD_BG, CLR_CARD_BORDER,
     CLR_BTN_PRIMARY,
 )
+from styles.icons import IconButton, ICON_BTN
 from pages.utils import make_settings_card
 
 if TYPE_CHECKING:
@@ -182,7 +183,8 @@ class SettingsPage(QWidget):
         self._hotkey_list_layout.setSpacing(4)
         hotkey_layout.addWidget(self._hotkey_list_widget)
 
-        self._btn_add_hotkey = QPushButton("+ 添加快捷键")
+        self._btn_add_hotkey = IconButton("circle-plus", CLR_TEXT_SUB, CLR_BTN_PRIMARY, ICON_BTN)
+        self._btn_add_hotkey.setText("添加快捷键")
         self._btn_add_hotkey.setFixedHeight(28)
         self._btn_add_hotkey.setStyleSheet(f"""
             QPushButton {{
@@ -194,7 +196,7 @@ class SettingsPage(QWidget):
         self._btn_add_hotkey.clicked.connect(self._on_add_hotkey)
         hotkey_layout.addWidget(self._btn_add_hotkey)
 
-        self.chk_top = QCheckBox("📌 窗口置顶")
+        self.chk_top = QCheckBox("窗口置顶")
         self.chk_top.setChecked(False)
         self.chk_top.toggled.connect(self._main_win._on_top_toggled)
         hotkey_layout.addWidget(self.chk_top)
@@ -385,13 +387,10 @@ class SettingsPage(QWidget):
 
         layout.addStretch(1)
 
-        btn_del = QPushButton("×")
+        btn_del = IconButton("x", CLR_TEXT_SUB, "#E74C3C", 12)
         btn_del.setFixedWidth(30)
         btn_del.setFixedHeight(24)
-        btn_del.setStyleSheet(f"""
-            QPushButton {{ background: transparent; border: none; color: {CLR_TEXT_SUB}; font-size: 14px; }}
-            QPushButton:hover {{ color: #E74C3C; }}
-        """)
+        btn_del.setStyleSheet("QPushButton { background: transparent; border: none; }")
         btn_del.clicked.connect(lambda _, k=hotkey["key"]: self._on_remove_hotkey(k))
         layout.addWidget(btn_del)
 

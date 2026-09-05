@@ -28,6 +28,7 @@ class RemoteMonitorPage(QWidget):
         self._server = None
         self._thread = None
         self._port = None
+        self._token = None  # 本次服务启动的访问令牌（每次启动随机, 不持久化）
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -155,7 +156,16 @@ class RemoteMonitorPage(QWidget):
         info_row2.addWidget(self.label_ip)
         info_row2.addStretch(1)
         info_layout.addLayout(info_row2)
-        
+
+        info_row3 = QHBoxLayout()
+        info_row3.addWidget(QLabel("访问令牌："))
+        self.label_token = QLabel("—")
+        self.label_token.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px;")
+        self.label_token.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        info_row3.addWidget(self.label_token)
+        info_row3.addStretch(1)
+        info_layout.addLayout(info_row3)
+
         layout.addWidget(info_card)
 
         layout.addStretch(1)
@@ -173,6 +183,7 @@ class RemoteMonitorPage(QWidget):
             try:
                 from remote_server import start_server
                 self._server, self._thread, self._port = start_server(self._main_win)
+                self._token = self._server.token
                 self._main_win._remote_server = self._server
                 self._main_win._remote_thread = self._thread
                 self._update_ui_running()
@@ -189,6 +200,7 @@ class RemoteMonitorPage(QWidget):
             self._server = None
             self._thread = None
             self._port = None
+            self._token = None
             self._main_win._remote_server = None
             self._main_win._remote_thread = None
             self._update_ui_stopped()
@@ -200,18 +212,20 @@ class RemoteMonitorPage(QWidget):
         
         # 更新底部信息区
         self.label_port.setText(str(self._port))
+        self.label_token.setText(self._token or "—")
         
         # 检测IP是否有效（127.0.0.1表示无法获取局域网IP）
         if ip == "127.0.0.1":
             self.qrcode_widget.hide()
             self.url_widget.hide()
             self.hint_label.show()
-            self.hint_label.setText("⚠ 无法获取局域网IP\n请检查网络连接")
+            self.hint_label.setText("无法获取局域网IP\n请检查网络连接")
             self.hint_label.setStyleSheet("color: #EF5350; font-size: 12px;")
             self.label_ip.setText("127.0.0.1（本机）")
             return
         
-        url = f"http://{ip}:{self._port}"
+        # 访问令牌以 URL fragment 携带（不进 query/日志）, 扫码即自动登录
+        url = f"http://{ip}:{self._port}/#tk={self._token}"
         self.label_url.setText(url)
         self._update_qrcode(url)
         self.qrcode_widget.show()
@@ -228,6 +242,7 @@ class RemoteMonitorPage(QWidget):
         self.hint_label.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px;")
         self.label_port.setText("—")
         self.label_ip.setText("—")
+        self.label_token.setText("—")
 
     def _update_qrcode(self, url: str):
         """更新二维码（带异常保护）"""
@@ -268,6 +283,6 @@ class RemoteMonitorPage(QWidget):
             clipboard.setText(url)
             # 短暂显示复制成功提示
             original_text = self.label_url.text()
-            self.label_url.setText("✅ 已复制！")
+            self.label_url.setText("已复制！")
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(1500, lambda: self.label_url.setText(original_text))

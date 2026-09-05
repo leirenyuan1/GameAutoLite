@@ -29,6 +29,7 @@ import overlay_selector
 
 from styles.colors import *           # noqa: F403
 from styles.qss import get_global_qss
+from styles.icons import set_label_icon, ICON_STATUS
 from engine import EngineThread
 from config_manager import (
     save_config, load_config, export_scheme, write_scheme_file,
@@ -36,7 +37,7 @@ from config_manager import (
     CONFIG_FILE, SCREENSHOTS_DIR,
 )
 from hotkey_manager import HotkeyManager
-from widgets.sidebar import SideBar
+from widgets.sidebar import SideBar, STATUS_ICON_SPECS
 from widgets.floating_widget import FloatingWidget
 from widgets.task_card import CollapsibleTaskCard
 from pages.task_list_page import TaskListPage
@@ -72,11 +73,16 @@ class MainWindow(QMainWindow):
         self._remote_thread = None
         self._remote_status_lock = threading.Lock()
         self._remote_status_cache = {
-            "icon1": "⚡", "line1": "就绪",
-            "icon2": "🖱", "line2": "—",
-            "icon3": "⏱", "line3": "—",
+            "icon1": {"key": "zap", "color": CLR_TEXT_SUB}, "line1": "就绪",
+            "icon2": {"key": "mouse", "color": CLR_TEXT_SUB}, "line2": "—",
+            "icon3": {"key": "timer", "color": CLR_TEXT_SUB}, "line3": "—",
             "is_running": False
         }
+
+        # 状态图标数据源（远程缓存协议使用; 初始与 sidebar 三行一致）
+        self._status_icons: dict[str, dict] = {}
+        for i, key in enumerate(STATUS_ICON_SPECS, 1):
+            self._status_icons[f"icon{i}"] = {"key": key, "color": CLR_TEXT_SUB}
 
         # 预览定时器（复用同一个实例，避免内存泄漏）
         self._preview_timer = QTimer(self)
@@ -232,7 +238,7 @@ class MainWindow(QMainWindow):
         self._stop_image_path = path
         pixmap = QPixmap(path)
         if pixmap.isNull():
-            self.stop_img_preview.setText("⚠ 无效图片")
+            self.stop_img_preview.setText("无效图片")
             self.stop_img_preview.setStyleSheet(
                 "border: 2px dashed #EF5350; color: #EF5350; font-size: 11px;"
                 "border-radius: 6px;"
@@ -400,16 +406,28 @@ class MainWindow(QMainWindow):
         msg.setText(reason)
         self._exec_msgbox_centered(msg)
 
+    def _set_sidebar_icon(self, idx: int, key: str, color: str | None = None) -> None:
+        """
+        唯一的状态图标写入口: 更新 sidebar 状态图标位图 + _status_icons 数据源.
+        color 为 None 时沿用当前颜色（对应原代码中"未设色"的调用点, 保持原行为）.
+        """
+        lbl = {1: self.sidebar.status_icon1,
+               2: self.sidebar.status_icon2,
+               3: self.sidebar.status_icon3}[idx]
+        if color is None:
+            color = self._status_icons[f"icon{idx}"]["color"]
+        set_label_icon(lbl, key, color, ICON_STATUS)
+        self._status_icons[f"icon{idx}"] = {"key": key, "color": color}
+
     def _apply_condition_stop_ui(self) -> None:
         """更新状态栏为条件停止 + 同步悬浮窗 + 恢复窗口."""
         self.sidebar.set_engine_running(False)
         self.sidebar.status_line1.setText("条件停止")
-        self.sidebar.status_icon1.setText("🛑")
-        self.sidebar.status_icon1.setStyleSheet(f"color: #FF9800;")
+        self._set_sidebar_icon(1, "octagon", CLR_STATUS_WARN)
         self.sidebar.status_line2.setText("自动停止")
-        self.sidebar.status_icon2.setText("ℹ")
+        self._set_sidebar_icon(2, "info", CLR_STATUS_WARN)
         self.sidebar.status_line3.setText("—")
-        self.sidebar.status_icon3.setText("⏱")
+        self._set_sidebar_icon(3, "timer")
 
         if self._floating_widget and self._floating_widget.isVisible():
             self._floating_widget.sync_from_sidebar(self.sidebar)
@@ -422,13 +440,13 @@ class MainWindow(QMainWindow):
         with self._remote_status_lock:
             sb = self.sidebar
             self._remote_status_cache = {
-                "icon1": sb.status_icon1.text(),
+                "icon1": self._status_icons["icon1"],
                 "line1": sb.status_line1.text(),
-                "icon2": sb.status_icon2.text(),
+                "icon2": self._status_icons["icon2"],
                 "line2": sb.status_line2.text(),
-                "icon3": sb.status_icon3.text(),
+                "icon3": self._status_icons["icon3"],
                 "line3": sb.status_line3.text(),
-                "is_running": sb.btn_toggle.text().startswith("⏹")
+                "is_running": sb.is_running()
             }
 
     # 设置卡片计数器，用于生成唯一的 objectName
@@ -649,12 +667,11 @@ class MainWindow(QMainWindow):
 
         if has_error:
             self.sidebar.status_line1.setText("名称有误")
-            self.sidebar.status_icon1.setText("⚠")
-            self.sidebar.status_icon1.setStyleSheet("color: #E65100;")
+            self._set_sidebar_icon(1, "alert-triangle", CLR_STATUS_ERR)
             self.sidebar.status_line2.setText("请检查重复/空名称")
-            self.sidebar.status_icon2.setText("✏")
+            self._set_sidebar_icon(2, "pencil", CLR_STATUS_ERR)
             self.sidebar.status_line3.setText("")
-            self.sidebar.status_icon3.setText("⏱")
+            self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
             if self._floating_widget and self._floating_widget.isVisible():
                 self._floating_widget.sync_from_sidebar(self.sidebar)
             self._update_remote_status_cache()  # 插入点E1
@@ -664,12 +681,11 @@ class MainWindow(QMainWindow):
         configs = self._collect_task_configs()
         if not configs:
             self.sidebar.status_line1.setText("无可用任务")
-            self.sidebar.status_icon1.setText("⚠")
-            self.sidebar.status_icon1.setStyleSheet("color: #E65100;")
+            self._set_sidebar_icon(1, "alert-triangle", CLR_STATUS_ERR)
             self.sidebar.status_line2.setText("需设置图片")
-            self.sidebar.status_icon2.setText("🖱")
+            self._set_sidebar_icon(2, "mouse", CLR_TEXT_SUB)
             self.sidebar.status_line3.setText("和点击区域")
-            self.sidebar.status_icon3.setText("⏱")
+            self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
             # 同步到悬浮窗
             if self._floating_widget and self._floating_widget.isVisible():
                 self._floating_widget.sync_from_sidebar(self.sidebar)
@@ -744,64 +760,51 @@ class MainWindow(QMainWindow):
 
         if "运行中" in text:
             sb.status_line1.setText("运行中")
-            sb.status_icon1.setText("⚡")
-            sb.status_icon1.setStyleSheet(f"color: {CLR_BTN_SUCCESS};")
+            self._set_sidebar_icon(1, "zap", CLR_BTN_SUCCESS)
             sb.status_line2.setText("监测中...")
-            sb.status_icon2.setText("🔍")
+            self._set_sidebar_icon(2, "search", CLR_TEXT_SUB)
             sb.status_line3.setText("—")
-            sb.status_icon3.setText("⏱")
+            self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
 
         elif "匹配到" in text:
             m = re.search(r'匹配到「(.*?)」.*?(\d+)ms', text)
             name = m.group(1) if m else "目标"
             delay = m.group(2) if m else "?"
             sb.status_line1.setText("运行中")
-            sb.status_icon1.setText("⚡")
-            sb.status_icon1.setStyleSheet(f"color: {CLR_BTN_SUCCESS};")
+            self._set_sidebar_icon(1, "zap", CLR_BTN_SUCCESS)
             sb.status_line2.setText(f"识别: {name}")
-            sb.status_icon2.setText("🎯")
-            sb.status_icon2.setStyleSheet(f"color: {CLR_BTN_SUCCESS};")
+            self._set_sidebar_icon(2, "target", CLR_BTN_SUCCESS)
             sb.status_line3.setText(f"延迟 {delay}ms")
-            sb.status_icon3.setText("⏱")
-            sb.status_icon3.setStyleSheet(f"color: {CLR_TEXT_SUB};")
+            self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
 
         elif "点击完成" in text:
             m = re.search(r'冷却 (\d+)ms', text)
             cd = m.group(1) if m else "?"
             sb.status_line1.setText("运行中")
-            sb.status_icon1.setText("⚡")
-            sb.status_icon1.setStyleSheet(f"color: {CLR_BTN_SUCCESS};")
+            self._set_sidebar_icon(1, "zap", CLR_BTN_SUCCESS)
             sb.status_line2.setText("点击完成")
-            sb.status_icon2.setText("🖱")
-            sb.status_icon2.setStyleSheet(f"color: {CLR_BTN_SUCCESS};")
+            self._set_sidebar_icon(2, "mouse", CLR_BTN_SUCCESS)
             sb.status_line3.setText(f"冷却 {cd}ms")
-            sb.status_icon3.setText("⏱")
-            sb.status_icon3.setStyleSheet("color: #FF9800;")
+            self._set_sidebar_icon(3, "timer", CLR_STATUS_WARN)
 
         elif "截图失败" in text:
             sb.status_line1.setText("异常")
-            sb.status_icon1.setText("⚠")
-            sb.status_icon1.setStyleSheet(f"color: {CLR_BTN_DANGER};")
+            self._set_sidebar_icon(1, "alert-triangle", CLR_BTN_DANGER)
             sb.status_line2.setText("截图失败")
-            sb.status_icon2.setText("📷")
-            sb.status_icon2.setStyleSheet(f"color: {CLR_BTN_DANGER};")
+            self._set_sidebar_icon(2, "camera", CLR_BTN_DANGER)
             sb.status_line3.setText("1s 后重试")
-            sb.status_icon3.setText("⏱")
-            sb.status_icon3.setStyleSheet(f"color: {CLR_TEXT_SUB};")
+            self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
 
         elif "已停止" in text or "无可用任务" in text:
             if self._stop_by_condition:
                 self._update_remote_status_cache()  # 插入点A
                 return
             sb.status_line1.setText("就绪")
-            sb.status_icon1.setText("⚡")
-            sb.status_icon1.setStyleSheet(f"color: {CLR_TEXT_SUB};")
+            self._set_sidebar_icon(1, "zap", CLR_TEXT_SUB)
             sb.status_line2.setText("—")
-            sb.status_icon2.setText("🖱")
-            sb.status_icon2.setStyleSheet(f"color: {CLR_TEXT_SUB};")
+            self._set_sidebar_icon(2, "mouse", CLR_TEXT_SUB)
             sb.status_line3.setText("—")
-            sb.status_icon3.setText("⏱")
-            sb.status_icon3.setStyleSheet(f"color: {CLR_TEXT_SUB};")
+            self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
 
         # 同步到悬浮窗（如果可见）
         if self._floating_widget and self._floating_widget.isVisible():
@@ -815,14 +818,11 @@ class MainWindow(QMainWindow):
         self.sidebar.set_engine_running(False)
         sb = self.sidebar
         sb.status_line1.setText("就绪")
-        sb.status_icon1.setText("⚡")
-        sb.status_icon1.setStyleSheet(f"color: {CLR_TEXT_SUB};")
+        self._set_sidebar_icon(1, "zap", CLR_TEXT_SUB)
         sb.status_line2.setText("—")
-        sb.status_icon2.setText("🖱")
-        sb.status_icon2.setStyleSheet(f"color: {CLR_TEXT_SUB};")
+        self._set_sidebar_icon(2, "mouse", CLR_TEXT_SUB)
         sb.status_line3.setText("—")
-        sb.status_icon3.setText("⏱")
-        sb.status_icon3.setStyleSheet(f"color: {CLR_TEXT_SUB};")
+        self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
 
         # 统一同步悬浮窗状态（引擎停止完成后）
         if self._floating_widget and self._floating_widget.isVisible():
@@ -1391,10 +1391,10 @@ class MainWindow(QMainWindow):
                         ))
                     else:
                         self._stop_image_path = None
-                        self.stop_img_preview.setText("⚠ 无效图片")
+                        self.stop_img_preview.setText("无效图片")
                 elif self._stop_image_path:
                     self._stop_image_path = None
-                    self.stop_img_preview.setText("⚠ 图片已丢失")
+                    self.stop_img_preview.setText("图片已丢失")
                     self.chk_stop_cond3.setChecked(False)
                 self.slider_stop_threshold.setValue(ims.get("threshold", 90))
 

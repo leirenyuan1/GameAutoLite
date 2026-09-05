@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QFrame
 
 from styles.colors import CLR_SIDEBAR_ACT, CLR_SIDEBAR_SEL, CLR_SIDEBAR_TEXT
+from styles.icons import set_label_icon, ICON_NAV
 
 
 class NavItem(QWidget):
@@ -13,9 +14,10 @@ class NavItem(QWidget):
 
     clicked = pyqtSignal()
 
-    def __init__(self, icon: str, label: str, parent=None):
+    def __init__(self, icon_key: str, label: str, parent=None):
         super().__init__(parent)
         self._selected = False
+        self._icon_key = icon_key
         self.setFixedHeight(44)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -23,7 +25,7 @@ class NavItem(QWidget):
         layout.setContentsMargins(16, 0, 8, 0)
         layout.setSpacing(8)
 
-        self.icon_label = QLabel(icon)
+        self.icon_label = QLabel()
         self.icon_label.setFixedWidth(20)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -48,18 +50,14 @@ class NavItem(QWidget):
             self.text_label.setStyleSheet(
                 f"color: {CLR_SIDEBAR_ACT}; font-size: 13px; font-weight: bold;"
             )
-            self.icon_label.setStyleSheet(
-                f"color: {CLR_SIDEBAR_ACT}; font-size: 14px;"
-            )
+            set_label_icon(self.icon_label, self._icon_key, CLR_SIDEBAR_ACT, ICON_NAV)
             self.setStyleSheet(f"background: {CLR_SIDEBAR_SEL}; border-radius: 8px;")
         else:
             self.indicator.hide()
             self.text_label.setStyleSheet(
                 f"color: {CLR_SIDEBAR_TEXT}; font-size: 13px;"
             )
-            self.icon_label.setStyleSheet(
-                f"color: {CLR_SIDEBAR_TEXT}; font-size: 14px;"
-            )
+            set_label_icon(self.icon_label, self._icon_key, CLR_SIDEBAR_TEXT, ICON_NAV)
             self.setStyleSheet("background: transparent;")
 
     def set_selected(self, selected: bool) -> None:

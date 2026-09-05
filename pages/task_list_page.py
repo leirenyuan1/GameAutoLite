@@ -12,6 +12,7 @@ from styles.colors import (
     CLR_TEXT_MAIN, CLR_CARD_BG, CLR_CARD_BORDER,
     CLR_BTN_PRIMARY, CLR_TEXT_SUB,
 )
+from styles.icons import IconButton, ICON_BTN
 
 if TYPE_CHECKING:
     from main_window import MainWindow
@@ -43,7 +44,8 @@ class TaskListPage(QWidget):
         toolbar_layout.addWidget(title)
         toolbar_layout.addStretch(1)
 
-        self.btn_import = QPushButton("\U0001F4C2 导入方案")
+        self.btn_import = IconButton("folder", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
+        self.btn_import.setText("导入方案")
         self.btn_import.setStyleSheet(f"""
             QPushButton {{
                 background: {CLR_CARD_BG}; border: 1px solid {CLR_CARD_BORDER};
@@ -54,7 +56,8 @@ class TaskListPage(QWidget):
         """)
         self.btn_import.clicked.connect(self._main_win._on_import)
 
-        self.btn_export = QPushButton("\U0001F4BE 导出方案")
+        self.btn_export = IconButton("save", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
+        self.btn_export.setText("导出方案")
         self.btn_export.setStyleSheet(f"""
             QPushButton {{
                 background: {CLR_CARD_BG}; border: 1px solid {CLR_CARD_BORDER};
@@ -85,7 +88,8 @@ class TaskListPage(QWidget):
         page_layout.addWidget(self._scroll, 1)
 
         # -- 底部添加按钮 --
-        self.btn_add = QPushButton("＋ 添加任务")
+        self.btn_add = IconButton("circle-plus", CLR_TEXT_SUB, CLR_BTN_PRIMARY, ICON_BTN)
+        self.btn_add.setText("添加任务")
         self.btn_add.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;

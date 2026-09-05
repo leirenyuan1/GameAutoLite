@@ -3,6 +3,8 @@
 功能：提供局域网HTTP服务，供手机端查看状态、截图、控制启停
 """
 
+import hmac
+import secrets
 import socket
 import threading
 import json
@@ -13,6 +15,7 @@ from urllib.parse import urlparse
 from PyQt6.QtCore import QMetaObject, Qt
 
 from image_engine import take_screenshot
+from styles.icons import _BODY
 
 
 # 手机端HTML模板（必须用普通字符串，不能用f-string，HTML中有大量{}）
@@ -92,33 +95,45 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
             color: #43A047;
             margin-top: 8px;
         }
+        .token-input {
+            width: 100%; padding: 12px; border: 1px solid #ddd;
+            border-radius: 8px; font-size: 14px; margin: 8px 0;
+            box-sizing: border-box;
+        }
     </style>
 </head>
 <body>
     <div class="card">
-        <div class="title">🎮 GameAutoLite</div>
-        <div id="status-bar">🔄 连接中...</div>
+        <div class="title">GameAutoLite</div>
+        <div id="status-bar">连接中...</div>
     </div>
-    
+
+    <div class="card" id="token-card" style="display:none;">
+        <div style="text-align:center; font-size:14px; margin-bottom:4px;">输入访问令牌</div>
+        <div style="text-align:center; font-size:12px; color:#999; margin-bottom:8px;">令牌由桌面端「连接信息」卡显示，每次开启服务自动更换</div>
+        <input type="text" id="token-input" class="token-input" placeholder="例如 aBcD-EfG1_H2iJ">
+        <button class="btn btn-start" onclick="submitToken()">连接</button>
+    </div>
+
     <div class="card">
         <div class="status-row">
-            <span class="status-icon" id="icon1">⚡</span>
+            <span class="status-icon" id="icon1"></span>
             <span class="status-text" id="line1">加载中...</span>
         </div>
         <div class="status-row">
-            <span class="status-icon" id="icon2">🖱</span>
+            <span class="status-icon" id="icon2"></span>
             <span class="status-text" id="line2">—</span>
         </div>
         <div class="status-row">
-            <span class="status-icon" id="icon3">⏱</span>
+            <span class="status-icon" id="icon3"></span>
             <span class="status-text" id="line3">—</span>
         </div>
     </div>
-    
+
     <div class="card">
-        <button class="btn btn-start" id="toggle-btn" onclick="toggleEngine()">▶ 开始</button>
+        <button class="btn btn-start" id="toggle-btn" onclick="toggleEngine()">开始</button>
     </div>
-    
+
     <div class="card">
         <div style="text-align: center; font-size: 14px; margin-bottom: 8px;">刷新频率</div>
         <div class="frequency-selector">
@@ -127,98 +142,206 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
             <button class="freq-btn" onclick="setFrequency(5000, this)">5秒</button>
         </div>
     </div>
-    
+
     <div class="card">
-        <button class="btn btn-screenshot" id="screenshot-btn" onclick="loadScreenshot()">📷 查看屏幕</button>
+        <button class="btn btn-screenshot" id="screenshot-btn" onclick="loadScreenshot()">查看屏幕</button>
         <img id="screenshot" alt="屏幕截图" onerror="this.alt='截图失败，请重试'">
     </div>
 
     <script>
         let refreshInterval = 2000;
         let timer = null;
-        
+
+        // ===== 令牌鉴权状态机 =====
+        // idle:  无 token / 401 -> 停轮询, 显示令牌输入卡
+        // checking: 有 token 首次校验中（一次性请求）
+        // valid: 校验通过 -> 恢复轮询
+        let token = location.hash.startsWith('#tk=') ? location.hash.slice(4) : '';
+        let authState = token ? 'checking' : 'idle';
+
+        function authHeaders() { return { 'X-Auth-Token': token }; }
+
+        function stopPolling() {
+            if (timer) { clearInterval(timer); timer = null; }
+        }
+        function startPolling() {
+            stopPolling();
+            timer = setInterval(updateStatus, refreshInterval);
+        }
+
+        function enterTokenScreen(msg) {
+            authState = 'idle';
+            stopPolling();
+            document.getElementById('token-card').style.display = 'block';
+            document.getElementById('token-input').value = token || '';
+            const bar = document.getElementById('status-bar');
+            bar.textContent = msg || '需要访问令牌';
+            bar.style.color = '#EF5350';
+        }
+
+        // 一次性校验token: 通过 -> 落库localStorage + 恢复轮询; 401 -> 输入卡
+        function validateAndStart() {
+            authState = 'checking';
+            fetchWithTimeout('/status', { headers: authHeaders() }, 3000)
+                .then(r => {
+                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期'); return null; }
+                    if (!r.ok) throw new Error('http ' + r.status);
+                    return r.json();
+                })
+                .then(data => {
+                    if (!data) return;
+                    localStorage.setItem('rm_token', token);
+                    document.getElementById('token-card').style.display = 'none';
+                    authState = 'valid';
+                    updateStatus();
+                    startPolling();
+                })
+                .catch(() => enterTokenScreen('无法连接服务器，请检查网络'));
+        }
+
+        function submitToken() {
+            const t = document.getElementById('token-input').value.trim();
+            if (!t) return;
+            token = t;
+            validateAndStart();
+        }
+
+        // 线性描边图标（body 数据与桌面端 styles/icons.py 单一数据源）
+        const ICON_BODY = {__ICON_BODY__};
+        const DEFAULT_ICON_COLOR = '#7A9AB8';
+
+        // 生成内联 SVG（color 不传时继承 currentColor）
+        function icon(key, size, color) {
+            size = size || 16;
+            const body = ICON_BODY[key] || ICON_BODY.zap;
+            const stroke = color || 'currentColor';
+            return '<svg viewBox="0 0 24 24" fill="none" stroke="' + stroke +
+                   '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+                   'width="' + size + '" height="' + size + '" style="vertical-align:-3px;">' +
+                   body + '</svg>';
+        }
+
+        // 状态图标: 兼容对象 {key, color}（新协议）与旧字符串（防御旧缓存/旧页面）
+        function setStatusIcon(el, spec) {
+            if (!el) return;
+            if (typeof spec === 'string') spec = { key: spec, color: DEFAULT_ICON_COLOR };
+            if (!spec || !spec.key) return;
+            el.innerHTML = icon(spec.key, 16, spec.color);
+            el.style.color = spec.color || DEFAULT_ICON_COLOR;
+        }
+
         function fetchWithTimeout(url, options = {}, timeout = 3000) {
             return Promise.race([
                 fetch(url, options),
-                new Promise((_, reject) => 
+                new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('timeout')), timeout)
                 )
             ]);
         }
-        
+
         function updateStatus() {
-            fetchWithTimeout('/status', {}, 2000)
-                .then(r => r.json())
+            fetchWithTimeout('/status', { headers: authHeaders() }, 2000)
+                .then(r => {
+                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期'); return null; }
+                    if (!r.ok) throw new Error('http ' + r.status);
+                    return r.json();
+                })
                 .then(data => {
-                    document.getElementById('icon1').textContent = data.icon1;
+                    if (!data) return;
+                    setStatusIcon(document.getElementById('icon1'), data.icon1);
                     document.getElementById('line1').textContent = data.line1;
-                    document.getElementById('icon2').textContent = data.icon2;
+                    setStatusIcon(document.getElementById('icon2'), data.icon2);
                     document.getElementById('line2').textContent = data.line2;
-                    document.getElementById('icon3').textContent = data.icon3;
+                    setStatusIcon(document.getElementById('icon3'), data.icon3);
                     document.getElementById('line3').textContent = data.line3;
-                    
+
                     const btn = document.getElementById('toggle-btn');
                     if (data.is_running) {
-                        btn.textContent = '⏹ 停止';
+                        btn.innerHTML = icon('stop', 16) + ' 停止';
                         btn.className = 'btn btn-stop';
                     } else {
-                        btn.textContent = '▶ 开始';
+                        btn.innerHTML = icon('play', 16) + ' 开始';
                         btn.className = 'btn btn-start';
                     }
-                    
-                    document.getElementById('status-bar').textContent = '✅ 已连接';
-                    document.getElementById('status-bar').style.color = '#43A047';
+
+                    const bar = document.getElementById('status-bar');
+                    bar.innerHTML = icon('check', 16, '#43A047') + ' 已连接';
+                    bar.style.color = '#43A047';
                 })
                 .catch(() => {
-                    document.getElementById('status-bar').textContent = '⚠ 连接断开，请刷新页面';
-                    document.getElementById('status-bar').style.color = '#EF5350';
+                    const bar = document.getElementById('status-bar');
+                    bar.textContent = '连接断开，请刷新页面';
+                    bar.style.color = '#EF5350';
                 });
         }
         
         function toggleEngine() {
             const btn = document.getElementById('toggle-btn');
             btn.disabled = true;
-            fetchWithTimeout('/toggle', { method: 'POST' }, 3000)
-                .then(() => { setTimeout(updateStatus, 500); })
-                .catch(() => { updateStatus(); })
+            fetchWithTimeout('/toggle', { method: 'POST', headers: authHeaders() }, 3000)
+                .then(r => {
+                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期'); return; }
+                    if (!r.ok) throw new Error('http ' + r.status);
+                    setTimeout(updateStatus, 500);
+                })
+                .catch(() => { if (authState === 'valid') updateStatus(); })
                 .finally(() => { setTimeout(() => { btn.disabled = false; }, 1500); });
         }
         
+        // 截图: fetch+blob（img 无法携带 header; blob URL 天然绕过 HTTP 缓存, 无需 ?t= 参数）
+        let screenshotUrl = null;
         function loadScreenshot() {
             const btn = document.getElementById('screenshot-btn');
             const img = document.getElementById('screenshot');
-            btn.textContent = '⏳ 加载中...';
+            btn.innerHTML = icon('hourglass', 16) + ' 加载中...';
             btn.disabled = true;
-            
-            const newImg = new Image();
-            newImg.onload = () => {
-                img.src = newImg.src;
-                img.style.display = 'block';
-                btn.textContent = '📷 查看屏幕';
-                btn.disabled = false;
-            };
-            newImg.onerror = () => {
-                img.alt = '截图失败，请重试';
-                img.style.display = 'block';
-                btn.textContent = '📷 查看屏幕';
-                btn.disabled = false;
-            };
-            newImg.src = '/screenshot?t=' + Date.now();
+
+            fetch('/screenshot', { headers: authHeaders() })
+                .then(r => {
+                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期'); throw new Error('unauthorized'); }
+                    if (!r.ok) throw new Error('http ' + r.status);
+                    return r.blob();
+                })
+                .then(blob => {
+                    if (screenshotUrl) URL.revokeObjectURL(screenshotUrl);  // 释放上一张
+                    screenshotUrl = URL.createObjectURL(blob);
+                    img.onerror = () => { img.alt = '截图失败，请重试'; };
+                    img.src = screenshotUrl;
+                    img.style.display = 'block';
+                })
+                .catch(() => { img.alt = '截图失败，请重试'; img.style.display = 'block'; })
+                .finally(() => {
+                    btn.innerHTML = icon('camera', 16) + ' 查看屏幕';
+                    btn.disabled = false;
+                });
         }
-        
+
         function setFrequency(ms, btn) {
             refreshInterval = ms;
-            if (timer) clearInterval(timer);
-            timer = setInterval(updateStatus, ms);
             document.querySelectorAll('.freq-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
+            stopPolling();
+            if (authState === 'valid') startPolling();  // idle/checking 状态下不点活轮询
         }
-        
-        updateStatus();
-        timer = setInterval(updateStatus, refreshInterval);
+
+        // 初始化: 启停按钮初始图标 + 鉴权入口
+        document.getElementById('toggle-btn').innerHTML = icon('play', 16) + ' 开始';
+
+        if (token) {
+            validateAndStart();
+        } else {
+            enterTokenScreen();
+        }
     </script>
 </body>
 </html>"""
+
+# 从 styles/icons.py 单一数据源注入 JS 图标 body（模板保持普通字符串, 用 replace 占位符注入）
+_MOBILE_ICONS = ("zap", "mouse", "timer", "check", "stop", "play", "camera", "hourglass")
+MOBILE_HTML_TEMPLATE = MOBILE_HTML_TEMPLATE.replace(
+    "__ICON_BODY__",
+    ",\n        ".join('"%s": %s' % (k, json.dumps(_BODY[k])) for k in _MOBILE_ICONS),
+)
 
 
 class RemoteHTTPServer(ThreadingMixIn, HTTPServer):
@@ -237,38 +360,65 @@ class StatusHandler(BaseHTTPRequestHandler):
         """禁用默认日志输出"""
         pass
     
-    def send_json(self, data):
-        """发送JSON响应"""
-        self.send_response(200)
+    def send_json(self, data, code=200):
+        """发送JSON响应（默认200, no-store 防止被缓存）"""
+        self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
-    
+
+    def _authorized(self) -> bool:
+        """校验 X-Auth-Token 是否等于服务器当前 token（恒时比较）.
+        注意: 空 token 时无条件拒绝（防止 ''=='' 绕过）; compare_digest 只接受 bytes. """
+        server_token = getattr(self.server, "token", None)
+        if not server_token:
+            return False
+        supplied = self.headers.get("X-Auth-Token", "")
+        return hmac.compare_digest(
+            server_token.encode("utf-8"), supplied.encode("utf-8"))
+
+    def send_unauthorized(self):
+        self.send_json(
+            {"status": "unauthorized", "message": "无效或缺失访问令牌"}, code=401)
+
     def do_GET(self):
         # 解析路径，去掉查询参数（如 ?t=1234567890）
         path = urlparse(self.path).path
-        
-        if path == '/status':
+
+        if path == '/':
+            # 豁免鉴权: 页面需先加载, 令牌输入卡在这里; no-store 防旧页面缓存
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(MOBILE_HTML_TEMPLATE.encode('utf-8'))
+        elif path == '/ping':
+            # 豁免鉴权: 连通性探测, 无敏感数据
+            self.send_json({"status": "ok"})
+        elif path == '/status':
+            if not self._authorized():
+                self.send_unauthorized()
+                return
             main_win = self.server.main_window
             with main_win._remote_status_lock:
                 status = main_win._remote_status_cache.copy()
             self.send_json(status)
-        elif path == '/ping':
-            self.send_json({"status": "ok"})
-        elif path == '/':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(MOBILE_HTML_TEMPLATE.encode('utf-8'))
         elif path == '/screenshot':
+            if not self._authorized():
+                self.send_unauthorized()
+                return
             self.handle_screenshot()
         else:
             self.send_error(404)
-    
+
     def do_POST(self):
         path = urlparse(self.path).path
-        
+
         if path == '/toggle':
+            if not self._authorized():
+                self.send_unauthorized()
+                return
             main_win = self.server.main_window
             QMetaObject.invokeMethod(
                 main_win,
@@ -299,6 +449,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'image/jpeg')
         self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-store')
         self.end_headers()
         self.wfile.write(data)
 
@@ -333,6 +484,9 @@ def start_server(main_window, max_port_attempts: int = 10) -> tuple[HTTPServer, 
             continue
     else:
         raise RuntimeError(f"无法找到可用端口（已尝试 {start_port}-{start_port + max_port_attempts - 1}）")
+
+    # 每次启动随机生成访问令牌（不持久化; 必须在线程启动前赋值, 建立 happens-before）
+    server.token = secrets.token_urlsafe(9)
 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

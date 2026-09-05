@@ -16,6 +16,7 @@ from styles.colors import (
     CLR_CARD_BG, CLR_CARD_BORDER, CLR_TEXT_SUB,
     CLR_BTN_SUCCESS, CLR_BTN_DANGER,
 )
+from styles.icons import set_label_icon, button_icon, ICON_STATUS, ICON_BTN
 
 if TYPE_CHECKING:
     from main_window import MainWindow
@@ -31,6 +32,7 @@ class FloatingWidget(QWidget):
         self._last_pos = None
         self._fade_anim = None
         self._interactive = True  # 是否可交互
+        self._engine_running = False  # 引擎运行状态（由 sync_from_sidebar 同步）
         self._setup_ui()
 
     def _setup_ui(self):
@@ -61,16 +63,17 @@ class FloatingWidget(QWidget):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(6)
 
-        self.status_icon1, self.status_line1 = self._make_row(layout, "⚡", "就绪")
-        self.status_icon2, self.status_line2 = self._make_row(layout, "🖱", "—")
-        self.status_icon3, self.status_line3 = self._make_row(layout, "⏱", "—")
+        self.status_icon1, self.status_line1 = self._make_row(layout, "zap", CLR_TEXT_SUB, "就绪")
+        self.status_icon2, self.status_line2 = self._make_row(layout, "mouse", CLR_TEXT_SUB, "—")
+        self.status_icon3, self.status_line3 = self._make_row(layout, "timer", CLR_TEXT_SUB, "—")
 
         line = QFrame()
         line.setFixedHeight(1)
         line.setStyleSheet(f"background: {CLR_CARD_BORDER};")
         layout.addWidget(line)
 
-        self.btn_toggle = QPushButton("▶ 开始")
+        self.btn_toggle = QPushButton("开始")
+        self.btn_toggle.setIcon(button_icon("play", "#FFFFFF", ICON_BTN, self.devicePixelRatioF()))
         self.btn_toggle.setFixedHeight(36)
         self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_toggle.setStyleSheet(f"""
@@ -83,16 +86,16 @@ class FloatingWidget(QWidget):
         self.btn_toggle.clicked.connect(self._on_toggle_clicked)
         layout.addWidget(self.btn_toggle)
 
-    def _make_row(self, parent_layout, icon_text, line_text):
+    def _make_row(self, parent_layout, icon_key, icon_color, line_text):
         """创建一行状态显示"""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
 
-        icon_lbl = QLabel(icon_text)
+        icon_lbl = QLabel()
         icon_lbl.setFixedWidth(18)
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_lbl.setStyleSheet(f"font-size: 13px; color: {CLR_TEXT_SUB};")
+        set_label_icon(icon_lbl, icon_key, icon_color, ICON_STATUS)
 
         text_lbl = QLabel(line_text)
         text_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -104,28 +107,27 @@ class FloatingWidget(QWidget):
         return icon_lbl, text_lbl
 
     def sync_from_sidebar(self, sb):
-        """从 SideBar 同步所有状态（文本 + 颜色）"""
-        self.status_icon1.setText(sb.status_icon1.text())
-        self.status_icon1.setStyleSheet(sb.status_icon1.styleSheet())
+        """从 SideBar 同步所有状态（图标位图 + 文本 + 运行标志）"""
+        self.status_icon1.setPixmap(sb.status_icon1.pixmap())
         self.status_line1.setText(sb.status_line1.text())
         self.status_line1.setStyleSheet(sb.status_line1.styleSheet())
 
-        self.status_icon2.setText(sb.status_icon2.text())
-        self.status_icon2.setStyleSheet(sb.status_icon2.styleSheet())
+        self.status_icon2.setPixmap(sb.status_icon2.pixmap())
         self.status_line2.setText(sb.status_line2.text())
         self.status_line2.setStyleSheet(sb.status_line2.styleSheet())
 
-        self.status_icon3.setText(sb.status_icon3.text())
-        self.status_icon3.setStyleSheet(sb.status_icon3.styleSheet())
+        self.status_icon3.setPixmap(sb.status_icon3.pixmap())
         self.status_line3.setText(sb.status_line3.text())
         self.status_line3.setStyleSheet(sb.status_line3.styleSheet())
 
+        self._engine_running = sb.is_running()
         self.btn_toggle.setText(sb.btn_toggle.text())
+        self.btn_toggle.setIcon(sb.btn_toggle.icon())
         self._sync_button_style()
 
     def _sync_button_style(self):
-        """根据按钮文字更新样式"""
-        if "停止" in self.btn_toggle.text():
+        """根据运行标志更新按钮样式（禁止从按钮文本推断）"""
+        if self._engine_running:
             self.btn_toggle.setStyleSheet(f"""
                 QPushButton {{
                     background: {CLR_BTN_DANGER}; color: #fff; border: none;

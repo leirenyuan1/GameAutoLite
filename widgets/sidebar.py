@@ -12,7 +12,12 @@ from styles.colors import (
     CLR_SIDEBAR_ACT, CLR_CARD_BORDER, CLR_TEXT_SUB,
     CLR_BTN_SUCCESS, CLR_BTN_DANGER,
 )
+from styles.icons import set_label_icon, button_icon, ICON_BTN, ICON_STATUS
 from widgets.nav_item import NavItem
+
+
+# 状态三行初始图标 key（MainWindow 初始化 _status_icons 的单一数据源）
+STATUS_ICON_SPECS = ("zap", "mouse", "timer")
 
 
 class SideBar(QWidget):
@@ -23,6 +28,7 @@ class SideBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(130)
+        self._running = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -36,15 +42,11 @@ class SideBar(QWidget):
         logo_layout.setContentsMargins(0, 16, 0, 12)
         logo_layout.setSpacing(4)
 
-        logo_icon = QLabel("🎮")
-        logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_icon.setStyleSheet("font-size: 28px;")
-        logo_layout.addWidget(logo_icon)
-
+        # Logo 仅保留文字, 图标已移除（原手柄图标视觉不佳）
         logo_text = QLabel("GameAutoLite")
         logo_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo_text.setStyleSheet(
-            f"font-size: 11px; font-weight: bold; color: {CLR_SIDEBAR_ACT};"
+            f"font-size: 12px; font-weight: bold; color: {CLR_SIDEBAR_ACT};"
         )
         logo_layout.addWidget(logo_text)
 
@@ -61,10 +63,10 @@ class SideBar(QWidget):
         nav_layout.setContentsMargins(0, 4, 0, 0)
         nav_layout.setSpacing(4)
 
-        self.nav_tasks = NavItem("📋", "任务列表")
-        self.nav_stop = NavItem("🛑", "停止条件")
-        self.nav_settings = NavItem("⚙", "全局设置")
-        self.nav_remote = NavItem("📱", "远程监控")  # 新增
+        self.nav_tasks = NavItem("list", "任务列表")
+        self.nav_stop = NavItem("octagon", "停止条件")
+        self.nav_settings = NavItem("settings", "全局设置")
+        self.nav_remote = NavItem("smartphone", "远程监控")  # 新增
         self.nav_tasks.clicked.connect(lambda: self._on_nav(0))
         self.nav_stop.clicked.connect(lambda: self._on_nav(1))
         self.nav_settings.clicked.connect(lambda: self._on_nav(2))
@@ -96,14 +98,14 @@ class SideBar(QWidget):
         status_layout.setContentsMargins(0, 6, 0, 6)
         status_layout.setSpacing(2)
 
-        def _make_status_row(icon_text: str, line_text: str):
+        def _make_status_row(icon_key: str, icon_color: str, line_text: str):
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(4)
-            icon_lbl = QLabel(icon_text)
+            icon_lbl = QLabel()
             icon_lbl.setFixedWidth(18)
             icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon_lbl.setStyleSheet(f"font-size: 13px; color: {CLR_TEXT_SUB};")
+            set_label_icon(icon_lbl, icon_key, icon_color, ICON_STATUS)
             text_lbl = QLabel(line_text)
             text_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             text_lbl.setStyleSheet(f"font-size: 13px; color: {CLR_TEXT_SUB};")
@@ -112,12 +114,13 @@ class SideBar(QWidget):
             status_layout.addLayout(row)
             return icon_lbl, text_lbl
 
-        self.status_icon1, self.status_line1 = _make_status_row("⚡", "就绪")
-        self.status_icon2, self.status_line2 = _make_status_row("🖱", "—")
-        self.status_icon3, self.status_line3 = _make_status_row("⏱", "—")
+        self.status_icon1, self.status_line1 = _make_status_row("zap", CLR_TEXT_SUB, "就绪")
+        self.status_icon2, self.status_line2 = _make_status_row("mouse", CLR_TEXT_SUB, "—")
+        self.status_icon3, self.status_line3 = _make_status_row("timer", CLR_TEXT_SUB, "—")
         bottom_layout.addWidget(status_panel)
 
-        self.btn_toggle = QPushButton("▶ 开始")
+        self.btn_toggle = QPushButton("开始")
+        self.btn_toggle.setIcon(button_icon("play", "#FFFFFF", ICON_BTN, self.devicePixelRatioF()))
         self.btn_toggle.setFixedHeight(36)
         self.btn_toggle.setStyleSheet(f"""
             QPushButton {{
@@ -138,9 +141,11 @@ class SideBar(QWidget):
         self.navigate.emit(index)
 
     def set_engine_running(self, running: bool) -> None:
-        """更新启停按钮状态."""
+        """更新启停按钮状态（_running 为远程监控等业务判断的权威状态源）. """
+        self._running = running
         if running:
-            self.btn_toggle.setText("⏹ 停止")
+            self.btn_toggle.setText("停止")
+            self.btn_toggle.setIcon(button_icon("stop", "#FFFFFF", ICON_BTN, self.devicePixelRatioF()))
             self.btn_toggle.setStyleSheet(f"""
                 QPushButton {{
                     background: {CLR_BTN_DANGER}; color: #fff; border: none;
@@ -149,7 +154,8 @@ class SideBar(QWidget):
                 QPushButton:hover {{ background: #F44336; }}
             """)
         else:
-            self.btn_toggle.setText("▶ 开始")
+            self.btn_toggle.setText("开始")
+            self.btn_toggle.setIcon(button_icon("play", "#FFFFFF", ICON_BTN, self.devicePixelRatioF()))
             self.btn_toggle.setStyleSheet(f"""
                 QPushButton {{
                     background: {CLR_BTN_SUCCESS}; color: #fff; border: none;
@@ -157,6 +163,10 @@ class SideBar(QWidget):
                 }}
                 QPushButton:hover {{ background: #66BB6A; }}
             """)
+
+    def is_running(self) -> bool:
+        """引擎运行状态（唯一权威, 禁止从按钮文本推断）. """
+        return self._running
 
 
 # ============================================================

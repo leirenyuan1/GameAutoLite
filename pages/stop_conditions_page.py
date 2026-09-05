@@ -14,6 +14,7 @@ from styles.colors import (
     CLR_TEXT_MAIN, CLR_TEXT_SUB, CLR_CARD_BG, CLR_CARD_BORDER,
     CLR_BTN_PRIMARY, CLR_BTN_DANGER, CLR_CONTENT_BG,
 )
+from styles.icons import IconButton, ICON_BTN
 from pages.utils import make_settings_card
 
 if TYPE_CHECKING:
@@ -164,7 +165,8 @@ class StopConditionsPage(QWidget):
         c3_img_row.setContentsMargins(0, 0, 0, 0)
         c3_img_row.setSpacing(8)
 
-        self.btn_stop_img_upload = QPushButton("🖼 上传识别图")
+        self.btn_stop_img_upload = IconButton("image", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
+        self.btn_stop_img_upload.setText("上传识别图")
         self.btn_stop_img_upload.setStyleSheet(f"""
             QPushButton {{
                 background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
@@ -176,7 +178,8 @@ class StopConditionsPage(QWidget):
         self.btn_stop_img_upload.clicked.connect(self._main_win._on_stop_img_upload)
         c3_img_row.addWidget(self.btn_stop_img_upload)
 
-        self.btn_stop_img_capture = QPushButton("📷 截图上传")
+        self.btn_stop_img_capture = IconButton("camera", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
+        self.btn_stop_img_capture.setText("截图上传")
         self.btn_stop_img_capture.setStyleSheet(f"""
             QPushButton {{
                 background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
@@ -259,7 +262,7 @@ class StopConditionsPage(QWidget):
         c4_row.addStretch(1)
         c4_layout.addLayout(c4_row)
 
-        c4_warn = QLabel("⚠ 为保证体验，请确保时间大于游戏单局最长等待时间")
+        c4_warn = QLabel("为保证体验，请确保时间大于游戏单局最长等待时间")
         c4_warn.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 11px;")
         c4_warn.setWordWrap(True)
         c4_layout.addWidget(c4_warn)

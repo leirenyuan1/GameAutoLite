@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 
 import overlay_selector
 from config_manager import SCREENSHOTS_DIR
+from styles.icons import IconButton, ICON_BTN, ICON_CARD
 from styles.colors import (
     CLR_ACCENT_LINE, CLR_CARD_BORDER, CLR_CARD_HEADER,
     CLR_TEXT_MAIN, CLR_TEXT_SUB, CLR_BTN_PRIMARY,
@@ -87,12 +88,9 @@ class CollapsibleTaskCard(QFrame):
         header_layout.addWidget(accent_line)
 
         # 折叠/展开箭头
-        self.btn_arrow = QPushButton("▼")
+        self.btn_arrow = IconButton("chevron-down", "#7A9AB8", CLR_BTN_PRIMARY, ICON_CARD)
         self.btn_arrow.setFixedSize(32, 32)
-        self.btn_arrow.setStyleSheet(
-            "QPushButton { border: none; font-size: 16px; color: #7A9AB8; }"
-            "QPushButton:hover { color: #2196F3; }"
-        )
+        self.btn_arrow.setStyleSheet("QPushButton { border: none; }")
         self.btn_arrow.clicked.connect(self._toggle_expand)
         header_layout.addWidget(self.btn_arrow)
 
@@ -108,19 +106,18 @@ class CollapsibleTaskCard(QFrame):
         self.name_edit.editingFinished.connect(self._validate_name)
 
         # 操作按钮
-        self.btn_up = self._make_header_btn("↑")
+        self.btn_up = self._make_header_btn("chevron-up")
         self.btn_up.clicked.connect(lambda: self.moved_up.emit(self))
-        self.btn_down = self._make_header_btn("↓")
+        self.btn_down = self._make_header_btn("chevron-down")
         self.btn_down.clicked.connect(lambda: self.moved_down.emit(self))
-        self.btn_delete = QPushButton("✕")
+        self.btn_delete = IconButton("x", CLR_BTN_DANGER, "#FFFFFF", 14)
         self.btn_delete.setFixedSize(30, 30)
         self.btn_delete.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; border: none; border-radius: 6px;
-                font-size: 14px; font-weight: bold; color: {CLR_BTN_DANGER};
             }}
             QPushButton:hover {{
-                background: {CLR_BTN_DANGER}; color: #fff;
+                background: {CLR_BTN_DANGER};
             }}
         """)
         self.btn_delete.clicked.connect(lambda: self.removed.emit(self))
@@ -166,7 +163,8 @@ class CollapsibleTaskCard(QFrame):
 
         # ---- 行: 上传识别图 + 缩略图预览 ----
         row2 = QHBoxLayout()
-        self.btn_upload = QPushButton("🖼 上传识别图")
+        self.btn_upload = IconButton("image", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
+        self.btn_upload.setText("上传识别图")
         self.btn_upload.setStyleSheet(f"""
             QPushButton {{
                 background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
@@ -186,7 +184,8 @@ class CollapsibleTaskCard(QFrame):
         )
         self.img_preview.setText("无图片")
 
-        self.btn_capture = QPushButton("📷 截图上传")
+        self.btn_capture = IconButton("camera", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
+        self.btn_capture.setText("截图上传")
         self.btn_capture.setStyleSheet(f"""
             QPushButton {{
                 background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
@@ -230,7 +229,8 @@ class CollapsibleTaskCard(QFrame):
         row4 = QHBoxLayout()
         row4.addWidget(_row_label("点击区域:"))
 
-        self.btn_region = QPushButton("⊕ 设定")
+        self.btn_region = IconButton("circle-plus", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
+        self.btn_region.setText("设定")
         self.btn_region.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.btn_region.setStyleSheet(f"""
             QPushButton {{
@@ -361,7 +361,7 @@ class CollapsibleTaskCard(QFrame):
         # 默认展开
         self._expanded = True
         self.content_widget.setVisible(True)
-        self.btn_arrow.setText("▼")
+        self.btn_arrow.set_icon("chevron-down")
 
         # 初始阴影
         self.setGraphicsEffect(shadow)
@@ -373,16 +373,15 @@ class CollapsibleTaskCard(QFrame):
         line.setStyleSheet(f"background: {CLR_CARD_BORDER}; border: none;")
         return line
 
-    def _make_header_btn(self, text: str) -> QPushButton:
-        btn = QPushButton(text)
+    def _make_header_btn(self, icon_key: str) -> IconButton:
+        btn = IconButton(icon_key, CLR_TEXT_SUB, CLR_BTN_PRIMARY, 14)
         btn.setFixedSize(28, 28)
         btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; border: none; border-radius: 6px;
-                font-size: 13px; color: {CLR_TEXT_SUB};
             }}
             QPushButton:hover {{
-                background: {CLR_CONTENT_BG}; color: {CLR_BTN_PRIMARY};
+                background: {CLR_CONTENT_BG};
             }}
         """)
         return btn
@@ -417,7 +416,7 @@ class CollapsibleTaskCard(QFrame):
 
     def _expand(self) -> None:
         self._expanded = True
-        self.btn_arrow.setText("▼")
+        self.btn_arrow.set_icon("chevron-down")
         self._update_header_style()
         self.content_widget.setVisible(True)
         self.content_widget.setMaximumHeight(16777215)
@@ -437,7 +436,7 @@ class CollapsibleTaskCard(QFrame):
 
     def _collapse(self) -> None:
         self._expanded = False
-        self.btn_arrow.setText("▶")
+        self.btn_arrow.set_icon("chevron-right")
         self._update_header_style()
 
         cur_h = self.content_widget.height()
@@ -453,13 +452,13 @@ class CollapsibleTaskCard(QFrame):
         """外部设置初始折叠状态（无动画）."""
         if collapsed:
             self._expanded = False
-            self.btn_arrow.setText("▶")
+            self.btn_arrow.set_icon("chevron-right")
             self.content_widget.setVisible(False)
             self.content_widget.setMaximumHeight(0)
             self._update_header_style()
         else:
             self._expanded = True
-            self.btn_arrow.setText("▼")
+            self.btn_arrow.set_icon("chevron-down")
             self.content_widget.setVisible(True)
             self.content_widget.setMaximumHeight(16777215)
             self._update_header_style()
@@ -476,7 +475,7 @@ class CollapsibleTaskCard(QFrame):
         self._image_path = path
         pixmap = QPixmap(path)
         if pixmap.isNull():
-            self.img_preview.setText("⚠ 无效图片")
+            self.img_preview.setText("无效图片")
             self.img_preview.setStyleSheet(
                 "border: 2px dashed #EF5350; color: #EF5350; font-size: 11px;"
                 "border-radius: 6px;"
@@ -551,7 +550,7 @@ class CollapsibleTaskCard(QFrame):
             self.chk_multi_region.setChecked(False)
             self.chk_multi_region.blockSignals(False)
             # 更新 UI
-            self.btn_region.setText("⊕ 设定")
+            self.btn_region.setText("设定")
             self.btn_region.setDisabled(True)
             self.label_region.setText("跟随识别图")
             self.label_region.setStyleSheet(
@@ -561,7 +560,7 @@ class CollapsibleTaskCard(QFrame):
             # 取消勾选：恢复手动设定区域模式（与 _on_multi_region_changed 的 False 分支对齐）
             self._click_on_match = False
             self.btn_region.setDisabled(False)
-            self.btn_region.setText("⊕ 设定")
+            self.btn_region.setText("设定")
             if self._region:
                 x, y, w, h = self._region
                 self.label_region.setText(f"{x},{y}  {w}×{h}")
@@ -580,7 +579,7 @@ class CollapsibleTaskCard(QFrame):
             self.chk_click_on_match.setChecked(False)
             self.chk_click_on_match.blockSignals(False)
             # 更新 UI
-            self.btn_region.setText("⊕ 框选")
+            self.btn_region.setText("框选")
             self.btn_region.setDisabled(False)
             if self._regions:
                 self.label_region.setText(f"{len(self._regions)} 个区域")
@@ -593,7 +592,7 @@ class CollapsibleTaskCard(QFrame):
         else:
             self._multi_region = False
             # 恢复单区域模式 UI
-            self.btn_region.setText("⊕ 设定")
+            self.btn_region.setText("设定")
             self.btn_region.setDisabled(False)
             if self._region:
                 x, y, w, h = self._region
@@ -678,7 +677,7 @@ class CollapsibleTaskCard(QFrame):
 
     def _update_image_warning(self) -> None:
         if self._image_path and not os.path.exists(self._image_path):
-            self.img_preview.setText("⚠ 图片文件已丢失")
+            self.img_preview.setText("图片文件已丢失")
             self.img_preview.setStyleSheet(
                 "border: 2px dashed #EF5350; color: #EF5350; font-size: 10px;"
                 "border-radius: 6px;"
@@ -815,7 +814,7 @@ class CollapsibleTaskCard(QFrame):
         if self._image_path:
             pixmap = QPixmap(self._image_path)
             if pixmap.isNull():
-                self.img_preview.setText("⚠ 无效图片")
+                self.img_preview.setText("无效图片")
                 self.img_preview.setStyleSheet(
                     "border: 2px dashed #EF5350; color: #EF5350; font-size: 10px;"
                     "border-radius: 6px;"
@@ -849,7 +848,7 @@ class CollapsibleTaskCard(QFrame):
         if data.get("multi_region", False):
             self._multi_region = True
             self.chk_multi_region.setChecked(True)
-            self.btn_region.setText("⊕ 框选")
+            self.btn_region.setText("框选")
         raw_regions = data.get("regions", [])
         if raw_regions:
             self._regions = [tuple(int(v) for v in r) for r in raw_regions if len(r) == 4]

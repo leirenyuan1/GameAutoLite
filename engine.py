@@ -35,7 +35,7 @@ class EngineThread(QThread):
         self._template_cache: dict[str, object] = {}
 
     def run(self) -> None:
-        self.status_update.emit("● 运行中...")
+        self.status_update.emit("运行中...")
         start_time = time.time()
         task_match_counts: dict[str, int] = {}
         last_match_time = time.time()
@@ -79,7 +79,7 @@ class EngineThread(QThread):
                 screenshot = image_engine.take_screenshot()
             except Exception as e:
                 logger.error(f"截图失败: {e}")
-                self.status_update.emit("● 截图失败, 1秒后重试...")
+                self.status_update.emit("截图失败, 1秒后重试...")
                 time.sleep(1)
                 continue
 
@@ -116,7 +116,7 @@ class EngineThread(QThread):
                     _dmin, _dmax = cfg["delay_min"], cfg["delay_max"]
                     delay_ms = random.randint(_dmin, max(_dmin, _dmax))
                     self.status_update.emit(
-                        f"● 匹配到「{cfg['name']}」, 延迟 {delay_ms}ms 后点击"
+                        f"匹配到「{cfg['name']}」, 延迟 {delay_ms}ms 后点击"
                     )
                     self._sleep_interruptible(delay_ms / 1000.0)
                     if self._stop_event.is_set():
@@ -177,7 +177,7 @@ class EngineThread(QThread):
                     cooldown_ms = random.randint(_cmin, max(_cmin, _cmax))
                     if not self._stop_event.is_set():
                         self.status_update.emit(
-                            f"● 点击完成, 冷却 {cooldown_ms}ms"
+                            f"点击完成, 冷却 {cooldown_ms}ms"
                         )
                         if cooldown_ms > 0:
                             self._sleep_interruptible(cooldown_ms / 1000.0)
@@ -204,11 +204,11 @@ class EngineThread(QThread):
                     break
 
             if not matched and not self._stop_event.is_set():
-                self.status_update.emit("● 运行中...")
+                self.status_update.emit("运行中...")
                 if self._scan_interval > 0:
                     self._sleep_interruptible(self._scan_interval / 1000.0)
 
-        self.status_update.emit("● 已停止")
+        self.status_update.emit("已停止")
 
     def _sleep_interruptible(self, seconds: float) -> None:
         """可被打断的 sleep, 每 50ms 检查一次停止标志."""

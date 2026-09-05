@@ -16,3 +16,5 @@ CLR_BTN_PRIMARY  = "#2196F3"
 CLR_BTN_DANGER   = "#EF5350"
 CLR_BTN_SUCCESS  = "#43A047"
 CLR_ACCENT_LINE  = "#64B5F6"
+CLR_STATUS_WARN  = "#FF9800"   # 状态栏警示橙（条件停止、冷却中）
+CLR_STATUS_ERR   = "#E65100"   # 状态栏错误色（名称有误等）
