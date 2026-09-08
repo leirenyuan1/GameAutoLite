@@ -12,7 +12,7 @@ from styles.colors import (
     CLR_SIDEBAR_ACT, CLR_CARD_BORDER, CLR_TEXT_SUB,
     CLR_BTN_SUCCESS, CLR_BTN_DANGER,
 )
-from styles.icons import set_label_icon, button_icon, ICON_BTN, ICON_STATUS
+from styles.icons import set_label_icon, button_icon, ICON_BTN, ICON_STATUS, ICON_LOGO
 from widgets.nav_item import NavItem
 
 
@@ -42,7 +42,12 @@ class SideBar(QWidget):
         logo_layout.setContentsMargins(0, 16, 0, 12)
         logo_layout.setSpacing(4)
 
-        # Logo 仅保留文字, 图标已移除（原手柄图标视觉不佳）
+        # Logo 图标（手柄）+ 文字
+        logo_icon = QLabel()
+        logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        set_label_icon(logo_icon, "gamepad", CLR_SIDEBAR_ACT, ICON_LOGO)
+        logo_layout.addWidget(logo_icon)
+
         logo_text = QLabel("GameAutoLite")
         logo_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo_text.setStyleSheet(
@@ -60,7 +65,7 @@ class SideBar(QWidget):
         # ---------- 导航菜单区 ----------
         nav_area = QWidget()
         nav_layout = QVBoxLayout(nav_area)
-        nav_layout.setContentsMargins(0, 4, 0, 0)
+        nav_layout.setContentsMargins(8, 4, 8, 0)
         nav_layout.setSpacing(4)
 
         self.nav_tasks = NavItem("list", "任务列表")

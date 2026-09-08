@@ -106,9 +106,9 @@ class CollapsibleTaskCard(QFrame):
         self.name_edit.editingFinished.connect(self._validate_name)
 
         # 操作按钮
-        self.btn_up = self._make_header_btn("chevron-up")
+        self.btn_up = self._make_header_btn("arrow-up")
         self.btn_up.clicked.connect(lambda: self.moved_up.emit(self))
-        self.btn_down = self._make_header_btn("chevron-down")
+        self.btn_down = self._make_header_btn("arrow-down")
         self.btn_down.clicked.connect(lambda: self.moved_down.emit(self))
         self.btn_delete = IconButton("x", CLR_BTN_DANGER, "#FFFFFF", 14)
         self.btn_delete.setFixedSize(30, 30)
@@ -215,6 +215,9 @@ class CollapsibleTaskCard(QFrame):
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(50, 99)
         self.slider.setValue(90)
+        # 宽度区间：宽窗口下不拉满卡片，窄窗口下也保持可拖长度
+        self.slider.setMinimumWidth(200)
+        self.slider.setMaximumWidth(240)
         self.slider.wheelEvent = lambda event: event.ignore()
         self.slider.valueChanged.connect(self._on_slider_changed)
         row3.addWidget(self.slider, 1)
@@ -223,6 +226,7 @@ class CollapsibleTaskCard(QFrame):
         self.label_threshold.setMinimumWidth(36)
         self.label_threshold.setStyleSheet(_LABEL_STYLE)
         row3.addWidget(self.label_threshold)
+        row3.addStretch(1)  # 吸收多余宽度，保持整行左对齐
         content_layout.addWidget(row3_container)
 
         # ---- 行: 设定点击区域 ----
@@ -272,6 +276,7 @@ class CollapsibleTaskCard(QFrame):
         self.combo_click_mode.setEditable(True)
         self.combo_click_mode.addItems(["单击", "双击"])
         self.combo_click_mode.setMinimumWidth(80)
+        self.combo_click_mode.setMaximumWidth(120)
         self.combo_click_mode.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.combo_click_mode.setStyleSheet(f"""
             QComboBox {{
@@ -292,6 +297,7 @@ class CollapsibleTaskCard(QFrame):
         lbl_suffix.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         lbl_suffix.setStyleSheet(_SUB_STYLE)
         row4c.addWidget(lbl_suffix)
+        row4c.addStretch(1)  # 剩余宽度留在末尾，保持与本页其他行左对齐
         content_layout.addLayout(row4c)
 
         # ---- 分隔线 ----
@@ -308,6 +314,7 @@ class CollapsibleTaskCard(QFrame):
 
         self.edit_delay_min = QLineEdit("200")
         self.edit_delay_min.setMinimumWidth(50)
+        self.edit_delay_min.setMaximumWidth(96)
         self.edit_delay_min.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.edit_delay_min.setValidator(QIntValidator(0, 9999))
         self.edit_delay_min.editingFinished.connect(self._validate_delay)
@@ -319,6 +326,7 @@ class CollapsibleTaskCard(QFrame):
 
         self.edit_delay_max = QLineEdit("500")
         self.edit_delay_max.setMinimumWidth(50)
+        self.edit_delay_max.setMaximumWidth(96)
         self.edit_delay_max.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.edit_delay_max.setValidator(QIntValidator(0, 9999))
         self.edit_delay_max.editingFinished.connect(self._validate_delay)
@@ -332,6 +340,7 @@ class CollapsibleTaskCard(QFrame):
 
         self.edit_cooldown_min = QLineEdit("0")
         self.edit_cooldown_min.setMinimumWidth(50)
+        self.edit_cooldown_min.setMaximumWidth(96)
         self.edit_cooldown_min.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.edit_cooldown_min.setValidator(QIntValidator(0, 999999))
         self.edit_cooldown_min.editingFinished.connect(self._validate_cooldown)
@@ -343,6 +352,7 @@ class CollapsibleTaskCard(QFrame):
 
         self.edit_cooldown_max = QLineEdit("0")
         self.edit_cooldown_max.setMinimumWidth(50)
+        self.edit_cooldown_max.setMaximumWidth(96)
         self.edit_cooldown_max.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.edit_cooldown_max.setValidator(QIntValidator(0, 999999))
         self.edit_cooldown_max.editingFinished.connect(self._validate_cooldown)
@@ -350,9 +360,8 @@ class CollapsibleTaskCard(QFrame):
 
         grid.addWidget(_small_label("ms", 24), 1, 7)
 
-        # 列拉伸：输入框列可伸缩
-        grid.setColumnStretch(2, 1)
-        grid.setColumnStretch(6, 1)
+        # 列拉伸：末尾补一个空列吸收剩余宽度，输入框保持固定宽度不被拉伸
+        grid.setColumnStretch(8, 1)
 
         content_layout.addLayout(grid)
 

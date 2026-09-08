@@ -31,6 +31,7 @@ ICON_NAV = 15      # 导航项 20px 槽位
 ICON_STATUS = 14   # 状态行 18px 槽位
 ICON_BTN = 14      # 文本按钮
 ICON_CARD = 16     # 卡片头小按钮（32px/30px 按钮内）
+ICON_LOGO = 32     # 侧边栏 Logo 图标
 
 # ---- 图形定义（无颜色, 要素字符串拼接） ----
 _BODY: dict[str, str] = {
@@ -70,11 +71,14 @@ _BODY: dict[str, str] = {
     ),
     # ————— 导航/Logo —————
     "gamepad": (
-        '<rect x="3.5" y="8" width="17" height="9" rx="4.5"/>'
-        '<path d="M7.5 12.5h4"/>'
-        '<path d="M9.5 10.5v4"/>'
-        '<circle cx="15.8" cy="10.8" r="1"/>'
-        '<circle cx="18" cy="12.8" r="1"/>'
+        # 手柄轮廓（左右握把）+ 十字方向键 + 两个按钮
+        '<path d="M17.3 5H6.7a4 4 0 0 0-3.98 3.59C2.6 9.42 2 14.46 2 16a3 3 0 0 0 3 3'
+        'c1 0 1.5-.5 2-1l1.4-1.4A2 2 0 0 1 9.8 16h4.4a2 2 0 0 1 1.4.6L17 18c.5.5 1 1 2 1'
+        'a3 3 0 0 0 3-3c0-1.5-.6-6.6-.7-7.3A4 4 0 0 0 17.3 5z"/>'
+        '<path d="M6.5 11h4"/>'
+        '<path d="M8.5 9v4"/>'
+        '<circle cx="14.8" cy="12.3" r="1"/>'
+        '<circle cx="18.2" cy="9.7" r="1"/>'
     ),
     "list": (
         '<path d="M8.5 6h12"/>'
@@ -95,7 +99,8 @@ _BODY: dict[str, str] = {
     "stop": '<rect x="5.5" y="5.5" width="13" height="13" rx="2"/>',
     "chevron-down": '<path d="m6 9.5 6 6 6-6"/>',
     "chevron-right": '<path d="m9.5 6 6 6-6 6"/>',
-    "chevron-up": '<path d="m6 14.5 6-6 6 6"/>',
+    "arrow-up": '<path d="m6 12 6-6 6 6"/>' '<path d="M12 18V6"/>',
+    "arrow-down": '<path d="M12 6v12"/>' '<path d="m6 12 6 6 6-6"/>',
     "x": '<path d="M18 6 6 18"/>' '<path d="M6 6l12 12"/>',
     "image": (
         '<rect x="3.5" y="4" width="17" height="16" rx="2"/>'
@@ -121,12 +126,6 @@ _BODY: dict[str, str] = {
         '<path d="M5.5 21.5h13"/>'
         '<path d="M7 2.5v4.4a2 2 0 0 0 .6 1.4L12 12.8l4.4-4.5a2 2 0 0 0 .6-1.4V2.5"/>'
         '<path d="M7 21.5v-4.4a2 2 0 0 1 .6-1.4L12 11.3l4.4 4.4a2 2 0 0 1 .6 1.4v4.4"/>'
-    ),
-    "refresh-cw": (
-        '<path d="M21 4.5v5h-5"/>'
-        '<path d="M3 19.5v-5h5"/>'
-        '<path d="M21 9.5a8.5 8.5 0 0 0-14.7-3.6L3 9.5"/>'
-        '<path d="M3 14.5a8.5 8.5 0 0 0 14.7 3.6l3.3-3.6"/>'
     ),
     "check": '<circle cx="12" cy="12" r="9"/>' '<path d="m7.8 12.3 3 3 5.4-5.6"/>',
 }

@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._is_main_window = True  # 供 CollapsibleTaskCard._find_main_window 标记识别
         self.setWindowTitle("GameAutoLite")
-        self.setMinimumSize(480, 500)
+        self.setMinimumSize(550, 500)
 
         self._task_cards: list[CollapsibleTaskCard] = []
         self._engine: EngineThread | None = None

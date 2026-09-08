@@ -111,7 +111,7 @@ GameAutoLite/
 
 ### ⚠️ 注意
 
-运行软件后（无论是源码运行还是 exe），首次启动会在同目录下生成：
+运行软件后（无论是源码运行还是打包版），首次启动会在同目录下生成：
 - `config.json` — 配置文件，保存你的任务设置和全局选项
 - `screenshots/` — 存放截图上传的识别模板图片
 
@@ -119,11 +119,9 @@ GameAutoLite/
 
 ### 方式一：直接运行（推荐）
 
-从 [Releases](../../releases) 页面下载：
-- `GameAutoLite.exe` — 单文件，双击即用
-- `GameAutoLite-folder.zip` — 解压后运行，启动更快
+从 [Releases](../../releases) 页面下载 `GameAutoLite-folder.zip`，解压后双击运行其中的 `GameAutoLite.exe`。
 
-**推荐**：如果不嫌解压，下载文件夹版（GameAutoLite-folder.zip）体验更佳。
+> 自 v3.4 起不再提供单文件 exe，仅提供压缩包形式（解压运行启动更快、更稳定）。
 
 如点击无效，请右键选择「以管理员身份运行」。
 
@@ -144,12 +142,12 @@ python main.py
 ### 打包为 exe
 
 ```bash
-# 文件夹形式（启动快）
-pyinstaller --windowed --icon=icon.ico --name=GameAutoLite --add-data "icon.ico;." main.py
-
-# 单文件形式（便于分发）
-pyinstaller --onefile --windowed --icon=icon.ico --name=GameAutoLite --add-data "icon.ico;." main.py
+# 文件夹形式（当前唯一发布形式，启动快）
+# --noconfirm：自动覆盖已有的 dist/build，重复打包无需手动确认
+python -m PyInstaller --noconfirm --windowed --icon=icon.ico --name=GameAutoLite --add-data "icon.ico;." main.py
 ```
+
+打包后把 `dist/GameAutoLite/` 整个目录压缩为 `GameAutoLite-folder.zip` 发布。
 
 ## 📖 使用说明
 
@@ -174,6 +172,17 @@ pyinstaller --onefile --windowed --icon=icon.ico --name=GameAutoLite --add-data 
 - 点击拆分为 **按下 → 随机延迟 → 松开**，模拟真实点击停留
 
 ## 📝 版本历史
+
+### v3.4
+- 侧边栏顶部新增手柄图标，导航选中项改为整块圆角高亮（移除左侧竖条指示器）
+- 任务卡片「上移/下移」改用带竖线的箭头图标，与折叠箭头明显区分；清理 2 个闲置图标
+- 修复窗口缩到最窄时出现横向滚动条的问题（最小宽度调整为 550px）
+- 修复宽窗口下延迟/冷却输入框、点击行为下拉框被拉伸过宽的问题
+- 统一三处滑块（悬浮窗透明度、停止条件精确度、任务卡片精确度）的宽度策略：宽窗口下不拉满卡片，窄窗口下保持可拖长度
+- 修复远程监控「连接信息」三行数值不对齐的问题
+- 修复任务列表页滚动条未贴右边缘的问题（滚动区延伸至窗口边缘，卡片与按钮位置不变）
+- 文案优化：停止条件一「任务执行」精简为「执行」；条件四改为「连续 N 分钟匹配不到目标图片则停止」
+- 从本版本起不再提供单文件 exe，仅提供压缩包形式
 
 ### v3.3
 - 界面全面替换为线性描边 SVG 图标（导航/状态/按钮/卡片箭头，统一蓝白色系并跟随主题变色），移除全部界面 emoji 与冗余符号文本，状态文本精简为纯文字

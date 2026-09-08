@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QImage, QIntValidator
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QCheckBox, QLineEdit, QFrame, QScrollArea,
 )
 
@@ -141,30 +141,29 @@ class RemoteMonitorPage(QWidget):
         # ---- 信息卡片 ----
         info_card, info_layout = make_settings_card("连接信息")
         
-        info_row1 = QHBoxLayout()
-        info_row1.addWidget(QLabel("端口："))
+        # 用 QGridLayout 让三行标签列宽度一致，值起始位置自动对齐
+        info_grid = QGridLayout()
+        info_grid.setHorizontalSpacing(8)
+        info_grid.setVerticalSpacing(6)
+        info_grid.setColumnStretch(1, 1)
+
         self.label_port = QLabel("—")
         self.label_port.setStyleSheet(f"color: {CLR_TEXT_MAIN}; font-weight: bold;")
-        info_row1.addWidget(self.label_port)
-        info_row1.addStretch(1)
-        info_layout.addLayout(info_row1)
+        info_grid.addWidget(QLabel("端口："), 0, 0)
+        info_grid.addWidget(self.label_port, 0, 1)
         
-        info_row2 = QHBoxLayout()
-        info_row2.addWidget(QLabel("局域网IP："))
         self.label_ip = QLabel("—")
         self.label_ip.setStyleSheet(f"color: {CLR_TEXT_MAIN}; font-weight: bold;")
-        info_row2.addWidget(self.label_ip)
-        info_row2.addStretch(1)
-        info_layout.addLayout(info_row2)
+        info_grid.addWidget(QLabel("局域网IP："), 1, 0)
+        info_grid.addWidget(self.label_ip, 1, 1)
 
-        info_row3 = QHBoxLayout()
-        info_row3.addWidget(QLabel("访问令牌："))
         self.label_token = QLabel("—")
         self.label_token.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px;")
         self.label_token.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        info_row3.addWidget(self.label_token)
-        info_row3.addStretch(1)
-        info_layout.addLayout(info_row3)
+        info_grid.addWidget(QLabel("访问令牌："), 2, 0)
+        info_grid.addWidget(self.label_token, 2, 1)
+
+        info_layout.addLayout(info_grid)
 
         layout.addWidget(info_card)
 

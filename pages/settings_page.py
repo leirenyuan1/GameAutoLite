@@ -240,6 +240,8 @@ class SettingsPage(QWidget):
         # 注意：这是"悬浮窗透明度"标题标签，不是 self.label_opacity
         lbl_opacity = QLabel("悬浮窗透明度：")
         lbl_opacity.setMinimumWidth(80)  # 使用 setMinimumWidth 避免某些字体下文字截断
+        # 固定尺寸策略：宽窗口下不被拉伸，避免把滑块挤到右侧（否则需要行尾 stretch，反而压缩窄窗口下的滑块）
+        lbl_opacity.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         lbl_opacity.setStyleSheet(f"color: {CLR_TEXT_MAIN}; font-size: 13px;")
         opacity_row.addWidget(lbl_opacity)
 
@@ -277,7 +279,9 @@ class SettingsPage(QWidget):
                 background: #E6EEF5;
             }}
         """)
-        # slider 保持不变，stretch=1
+        # 宽度区间：宽窗口下不拉满整张卡片，窄窗口下也不被行尾弹簧压得过短
+        self.slider_opacity.setMinimumWidth(200)
+        self.slider_opacity.setMaximumWidth(240)
         opacity_row.addWidget(self.slider_opacity, 1)
 
         # 注意：这是右侧显示百分比的标签，与上面的 lbl_opacity 不同
@@ -289,6 +293,7 @@ class SettingsPage(QWidget):
             QLabel:disabled {{ color: {CLR_TEXT_SUB}; }}
         """)
         opacity_row.addWidget(self.label_opacity)
+        opacity_row.addStretch(1)  # 吸收多余宽度，保证整行左对齐
 
         floating_layout.addWidget(opacity_container)
 

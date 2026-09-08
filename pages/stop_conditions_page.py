@@ -103,7 +103,7 @@ class StopConditionsPage(QWidget):
         self.combo_stop_task.wheelEvent = lambda event: event.ignore()
         c1_row.addWidget(self.combo_stop_task)
 
-        c1_row.addWidget(QLabel("任务执行"))
+        c1_row.addWidget(QLabel("执行"))
 
         self.edit_stop_exec_count = QLineEdit("5")
         self.edit_stop_exec_count.setFixedWidth(64)
@@ -219,6 +219,9 @@ class StopConditionsPage(QWidget):
         self.slider_stop_threshold = QSlider(Qt.Orientation.Horizontal)
         self.slider_stop_threshold.setRange(50, 99)
         self.slider_stop_threshold.setValue(90)
+        # 宽度区间：宽窗口下不拉满卡片，窄窗口下也保持可拖长度
+        self.slider_stop_threshold.setMinimumWidth(200)
+        self.slider_stop_threshold.setMaximumWidth(240)
         self.slider_stop_threshold.wheelEvent = lambda event: event.ignore()
         self.slider_stop_threshold.valueChanged.connect(
             lambda v: self.label_stop_threshold.setText(f"{v}%")
@@ -229,6 +232,7 @@ class StopConditionsPage(QWidget):
         self.label_stop_threshold.setMinimumWidth(36)
         self.label_stop_threshold.setStyleSheet(f"color: {CLR_TEXT_MAIN}; font-size: 12px;")
         c3_slider_layout.addWidget(self.label_stop_threshold)
+        c3_slider_layout.addStretch(1)  # 吸收多余宽度，保持整行左对齐
         c3_layout.addWidget(c3_slider_row)
 
         layout.addWidget(c3_card)
@@ -239,7 +243,7 @@ class StopConditionsPage(QWidget):
         c4_row.setContentsMargins(0, 0, 0, 0)
         c4_row.setSpacing(8)
 
-        self.chk_stop_cond4 = QCheckBox()
+        self.chk_stop_cond4 = QCheckBox("连续")
         self.chk_stop_cond4.setStyleSheet(f"""
             QCheckBox {{ color: {CLR_TEXT_MAIN}; font-size: 13px; }}
             QCheckBox:disabled {{ color: {CLR_TEXT_SUB}; }}
@@ -258,11 +262,11 @@ class StopConditionsPage(QWidget):
         """)
         c4_row.addWidget(self.edit_stop_idle_minutes)
 
-        c4_row.addWidget(QLabel("分钟无匹配则停止"))
+        c4_row.addWidget(QLabel("分钟匹配不到目标图片则停止"))
         c4_row.addStretch(1)
         c4_layout.addLayout(c4_row)
 
-        c4_warn = QLabel("为保证体验，请确保时间大于游戏单局最长等待时间")
+        c4_warn = QLabel("建议时长大于游戏最长加载等待时间，避免中途误停")
         c4_warn.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 11px;")
         c4_warn.setWordWrap(True)
         c4_layout.addWidget(c4_warn)

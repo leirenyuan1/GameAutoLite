@@ -28,13 +28,13 @@ class TaskListPage(QWidget):
 
     def _setup_ui(self) -> None:
         page_layout = QVBoxLayout(self)
-        page_layout.setContentsMargins(8, 6, 8, 6)
+        page_layout.setContentsMargins(8, 6, 0, 6)
         page_layout.setSpacing(8)
 
         # -- 顶部工具栏 --
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setContentsMargins(0, 0, 8, 0)
         toolbar_layout.setSpacing(8)
 
         title = QLabel("任务列表")
@@ -82,7 +82,7 @@ class TaskListPage(QWidget):
         self._card_container.setStyleSheet("background: transparent;")
         self._card_layout = QVBoxLayout(self._card_container)
         self._card_layout.setSpacing(8)
-        self._card_layout.setContentsMargins(0, 0, 0, 0)
+        self._card_layout.setContentsMargins(0, 0, 8, 0)
 
         self._scroll.setWidget(self._card_container)
         page_layout.addWidget(self._scroll, 1)
