@@ -134,18 +134,16 @@ class HotkeyCaptureDialog(QDialog):
             return
         self._captured_keys.add(key)
         self._label_error.setText("")
-        self._update_display()
+        self._refresh_capture_state()
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
         key = self._translate_key(event)
         if not key:
             return
-        # 必须在 discard 之前锁定：松开非修饰键时，用松键前的完整组合作为快捷键
-        # 例如按 Ctrl+Shift+P 后松开 P，此时 _captured_keys = {ctrl, shift, p}
-        # 应锁定为 ctrl+shift+p，而不是 discard p 后锁定 ctrl+shift
         if not self._is_modifier(key):
-            self._lock_hotkey()
+            self._lock_hotkey()  # 非修饰键松开时锁定
         self._captured_keys.discard(key)
+        self._refresh_capture_state()
 
     def _translate_key(self, event: QKeyEvent) -> str | None:
         """将 Qt 键码转换为 keyboard 库格式的键名。"""
@@ -162,15 +160,15 @@ class HotkeyCaptureDialog(QDialog):
         """检查是否为修饰键。"""
         return key.lower() in _MODIFIERS
 
-    def _update_display(self) -> None:
-        """更新显示标签，格式化当前按下的键组合。"""
+    def _refresh_capture_state(self) -> None:
+        """闭环状态机：根据当前剩余按下集合与锁定状态统一更新 UI (BUG-17)."""
         if self._captured_keys:
             parts = sorted(self._captured_keys, key=lambda k: (k not in _MODIFIERS, k))
-            display = "+".join(parts).upper()
-            self._label_display.setText(display)
-            # 只有当包含非修饰键时才启用确定按钮
-            has_non_modifier = any(not self._is_modifier(k) for k in self._captured_keys)
-            self._btn_confirm.setEnabled(has_non_modifier)
+            self._label_display.setText("+".join(parts).upper())
+            self._btn_confirm.setEnabled(any(not self._is_modifier(k) for k in self._captured_keys))
+        elif self._hotkey_string:
+            self._label_display.setText(self._hotkey_string.upper())
+            self._btn_confirm.setEnabled(True)
         else:
             self._label_display.setText("等待输入中...")
             self._btn_confirm.setEnabled(False)

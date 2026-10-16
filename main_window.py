@@ -881,6 +881,9 @@ class MainWindow(QMainWindow):
         """带动画删除卡片."""
         if card not in self._task_cards:
             return
+        card.btn_up.setEnabled(False)
+        card.btn_down.setEnabled(False)
+        card.btn_delete.setEnabled(False)
         self._task_cards.remove(card)
         card._is_deleting = True
 
@@ -928,12 +931,16 @@ class MainWindow(QMainWindow):
         self._refresh_move_buttons()
 
     def _move_task_up(self, card: CollapsibleTaskCard) -> None:
+        if card not in self._task_cards or getattr(card, "_is_deleting", False):
+            return
         idx = self._task_cards.index(card)
         if idx <= 0:
             return
         self._do_move_card(card, idx, idx - 1)
 
     def _move_task_down(self, card: CollapsibleTaskCard) -> None:
+        if card not in self._task_cards or getattr(card, "_is_deleting", False):
+            return
         idx = self._task_cards.index(card)
         if idx >= len(self._task_cards) - 1:
             return
@@ -1286,9 +1293,12 @@ class MainWindow(QMainWindow):
                         self._hotkey_mgr.register_all(self, "_toggle_engine", enabled)
 
                 # 同步 UI 控件 - 复选框
-                self.chk_top.setChecked(
-                    self._global_settings.get("always_on_top", False)
-                )
+                top_enabled = self._global_settings.get("always_on_top", False)
+                if top_enabled:
+                    self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                self.chk_top.blockSignals(True)
+                self.chk_top.setChecked(top_enabled)
+                self.chk_top.blockSignals(False)
                 self.chk_auto_minimize.setChecked(
                     self._global_settings.get("auto_minimize", False)
                 )

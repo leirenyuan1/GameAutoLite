@@ -53,6 +53,7 @@ class CollapsibleTaskCard(QFrame):
         self._expanded = True
         self._is_deleting = False
         self._name_has_error = False  # 标记当前卡片名称是否有校验错误
+        self._fold_anim: QPropertyAnimation | None = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -291,9 +292,13 @@ class CollapsibleTaskCard(QFrame):
         """)
         self.combo_click_mode.wheelEvent = lambda event: event.ignore()
         self.combo_click_mode.currentTextChanged.connect(self._on_click_mode_changed)
+        if self.combo_click_mode.lineEdit():
+            self.combo_click_mode.lineEdit().editingFinished.connect(
+                self._on_click_mode_editing_finished
+            )
         row4c.addWidget(self.combo_click_mode)
 
-        lbl_suffix = QLabel("击（可填入1~9999的阿拉伯数字）")
+        lbl_suffix = QLabel("（可填入 1~9999 自定义次数）")
         lbl_suffix.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         lbl_suffix.setStyleSheet(_SUB_STYLE)
         row4c.addWidget(lbl_suffix)
@@ -424,6 +429,11 @@ class CollapsibleTaskCard(QFrame):
             self._expand()
 
     def _expand(self) -> None:
+        try:
+            if self._fold_anim is not None and self._fold_anim.state() == QPropertyAnimation.State.Running:
+                self._fold_anim.stop()
+        except RuntimeError:
+            self._fold_anim = None
         self._expanded = True
         self.btn_arrow.set_icon("chevron-down")
         self._update_header_style()
@@ -442,8 +452,14 @@ class CollapsibleTaskCard(QFrame):
         anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         anim.finished.connect(lambda: self.content_widget.setMaximumHeight(16777215))
         anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+        self._fold_anim = anim
 
     def _collapse(self) -> None:
+        try:
+            if self._fold_anim is not None and self._fold_anim.state() == QPropertyAnimation.State.Running:
+                self._fold_anim.stop()
+        except RuntimeError:
+            self._fold_anim = None
         self._expanded = False
         self.btn_arrow.set_icon("chevron-right")
         self._update_header_style()
@@ -456,6 +472,7 @@ class CollapsibleTaskCard(QFrame):
         anim.setEasingCurve(QEasingCurve.Type.InCubic)
         anim.finished.connect(lambda: self.content_widget.setVisible(False))
         anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+        self._fold_anim = anim
 
     def set_collapsed(self, collapsed: bool) -> None:
         """外部设置初始折叠状态（无动画）."""
@@ -624,6 +641,25 @@ class CollapsibleTaskCard(QFrame):
                 self._click_count = max(1, min(9999, val))
             except ValueError:
                 self._click_count = 1
+
+    def _on_click_mode_editing_finished(self) -> None:
+        """输入框失焦或回车时的格式化与合法性修正 (BUG-16)."""
+        text = self.combo_click_mode.currentText().strip()
+        if text in ("单击", "双击"):
+            return
+        try:
+            val = int(text)
+            clamped = max(1, min(9999, val))
+            self._click_count = clamped
+            if clamped == 1:
+                self.combo_click_mode.setCurrentText("单击")
+            elif clamped == 2:
+                self.combo_click_mode.setCurrentText("双击")
+            else:
+                self.combo_click_mode.setCurrentText(str(clamped))
+        except (ValueError, TypeError):
+            self._click_count = 1
+            self.combo_click_mode.setCurrentText("单击")
 
     def _on_slider_changed(self, value: int) -> None:
         self.label_threshold.setText(f"{value}%")
