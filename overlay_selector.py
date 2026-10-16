@@ -175,6 +175,8 @@ class _OverlayWidget(QWidget):
         self._close_and_exit()
 
     def _close_and_exit(self) -> None:
+        self.hide()
+        QApplication.processEvents()
         self.close()
         self._loop.quit()
 

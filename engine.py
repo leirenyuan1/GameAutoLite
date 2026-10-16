@@ -140,6 +140,8 @@ class EngineThread(QThread):
                                 if ci > 0:
                                     _interval = random.uniform(0.15, 0.25) / self._click_speed
                                     self._sleep_interruptible(_interval)
+                                    if self._stop_event.is_set():
+                                        break
                                 mouse_controller.click_in_regions(
                                     regions,
                                     move_speed=self._move_speed,
@@ -181,16 +183,20 @@ class EngineThread(QThread):
                     except Exception as e:
                         logger.error(f"点击失败: {e}")
 
+                    if self._stop_event.is_set():
+                        break
+
                     # 5. 点击后冷却
                     _cmin = cfg.get("cooldown_min", 0)
                     _cmax = cfg.get("cooldown_max", 0)
                     cooldown_ms = random.randint(_cmin, max(_cmin, _cmax))
-                    if not self._stop_event.is_set():
-                        self._emit_status(
-                            f"点击完成, 冷却 {cooldown_ms}ms"
-                        )
-                        if cooldown_ms > 0:
-                            self._sleep_interruptible(cooldown_ms / 1000.0)
+                    self._emit_status(
+                        f"点击完成, 冷却 {cooldown_ms}ms"
+                    )
+                    if cooldown_ms > 0:
+                        self._sleep_interruptible(cooldown_ms / 1000.0)
+                    if self._stop_event.is_set():
+                        break
 
                     matched = True
 

@@ -15,7 +15,7 @@ import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QPixmap, QIntValidator, QColor
 from PyQt6.QtWidgets import (
-    QFrame, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QApplication, QFrame, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QSlider,
     QComboBox, QFileDialog, QGraphicsDropShadowEffect, QSizePolicy,
 )
@@ -524,6 +524,8 @@ class CollapsibleTaskCard(QFrame):
         try:
             result = overlay_selector.get_region()
             if result is not None:
+                QApplication.processEvents()
+                time.sleep(0.05)
                 x, y, w, h = result
                 try:
                     with mss.mss() as sct:
@@ -694,7 +696,10 @@ class CollapsibleTaskCard(QFrame):
             if mn > mx:
                 self.edit_delay_max.setText(str(mn + 100))
         except ValueError:
-            pass
+            if not self.edit_delay_min.text().strip():
+                self.edit_delay_min.setText("200")
+            if not self.edit_delay_max.text().strip():
+                self.edit_delay_max.setText("500")
 
     def _validate_cooldown(self) -> None:
         try:
@@ -703,7 +708,10 @@ class CollapsibleTaskCard(QFrame):
             if mn > mx:
                 self.edit_cooldown_max.setText(str(mn))
         except ValueError:
-            pass
+            if not self.edit_cooldown_min.text().strip():
+                self.edit_cooldown_min.setText("0")
+            if not self.edit_cooldown_max.text().strip():
+                self.edit_cooldown_max.setText("0")
 
     # ---- 图片路径有效性检查 ----
 

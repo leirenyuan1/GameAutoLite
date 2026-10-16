@@ -269,6 +269,8 @@ class MainWindow(QMainWindow):
             self._floating_widget.hide()
         if self.isVisible():
             self.showMinimized()
+            QApplication.processEvents()
+            time.sleep(0.05)
         return state
 
     def restore_after_selection(self, state: dict) -> None:
@@ -291,6 +293,8 @@ class MainWindow(QMainWindow):
         try:
             result = overlay_selector.get_region()
             if result is not None:
+                QApplication.processEvents()
+                time.sleep(0.05)
                 x, y, w, h = result
                 try:
                     with mss.mss() as sct:
@@ -448,15 +452,15 @@ class MainWindow(QMainWindow):
             line3 = f"累计已执行 {count} 次"
             return line2, "info", CLR_STATUS_WARN, line3, "check", CLR_BTN_SUCCESS
 
-        # 2. 运行时长限制: 已达到最大运行时间 {minutes} 分钟，自动停止
-        m2 = re.search(r"最大运行时间\s*(\d+)\s*分钟", reason)
+        # 2. 运行时长限制: 对齐 engine.py 的 "已运行 {minutes} 分钟，自动停止"
+        m2 = re.search(r"(?:已运行|最大运行时间)\s*(\d+)\s*分钟", reason)
         if m2:
             minutes = m2.group(1)
             line2 = "挂机时长达标"
             line3 = f"已达到 {minutes} 分钟"
             return line2, "info", CLR_STATUS_WARN, line3, "timer", CLR_STATUS_WARN
 
-        # 3. 停止图片匹配: 已检测到停止图片（匹配度 {score}%），自动停止
+        # 3. 停止图片匹配: 对齐 engine.py 的 "识别到指定停止图片，自动停止"
         m3 = re.search(r"匹配度\s*(\d+)%", reason)
         if m3:
             score = m3.group(1)
@@ -468,8 +472,8 @@ class MainWindow(QMainWindow):
             line3 = "检测到停止图"
             return line2, "info", CLR_STATUS_WARN, line3, "check", CLR_BTN_SUCCESS
 
-        # 4. 无匹配超时: 连续 {minutes} 分钟未匹配到任何图片，自动停止
-        m4 = re.search(r"连续\s*(\d+)\s*分钟未匹配", reason)
+        # 4. 无匹配超时: 对齐 engine.py 的 "{minutes} 分钟无匹配，自动停止"
+        m4 = re.search(r"(?:连续\s*)?(\d+)\s*分钟(?:无匹配|未匹配)", reason)
         if m4:
             minutes = m4.group(1)
             line2 = "画面无任何匹配"
@@ -984,6 +988,7 @@ class MainWindow(QMainWindow):
         card.btn_delete.setEnabled(False)
         self._task_cards.remove(card)
         card._is_deleting = True
+        self._refresh_move_buttons()
 
         # 阶段1: 透明度动画 1.0 → 0.0
         # 动态创建 opacity effect 替换 shadow（QGraphicsEffect 互斥）
@@ -1046,7 +1051,7 @@ class MainWindow(QMainWindow):
 
     def _do_move_card(self, card: CollapsibleTaskCard, from_idx: int, to_idx: int) -> None:
         """通用卡片移动：先重排布局，再动画滑动."""
-        if self._moveAnimating:
+        if self._moveAnimating or any(getattr(c, "_is_deleting", False) for c in self._card_container.findChildren(CollapsibleTaskCard)):
             return
         self._moveAnimating = True
         # 1. 禁用所有移动按钮 + 删除按钮
@@ -1529,6 +1534,9 @@ class MainWindow(QMainWindow):
                             60, 60, Qt.AspectRatioMode.KeepAspectRatio,
                             Qt.TransformationMode.SmoothTransformation
                         ))
+                        self.stop_img_preview.setStyleSheet(
+                            f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
+                        )
                     else:
                         self._stop_image_path = None
                         self.stop_img_preview.setText("无效图片")
