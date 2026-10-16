@@ -433,17 +433,78 @@ class MainWindow(QMainWindow):
         set_label_icon(lbl, key, color, ICON_STATUS)
         self._status_icons[f"icon{idx}"] = {"key": key, "color": color}
 
+    @staticmethod
+    def _parse_stop_reason_lines(reason: str) -> tuple[str, str, str, str, str, str]:
+        """
+        方案 A：结构化解析停止原因，分拆至第 2 行（条件主体）与第 3 行（达标结果）
+        返回: (line2_text, icon2_key, icon2_color, line3_text, icon3_key, icon3_color)
+        """
+        # 1. 任务执行次数: 「{task_name}」已执行 {count} 次，自动停止
+        m1 = re.search(r"「(.*?)」已执行\s*(\d+)\s*次", reason)
+        if m1:
+            task_name, count = m1.group(1), m1.group(2)
+            display_name = task_name if len(task_name) <= 5 else task_name[:4] + "…"
+            line2 = f"任务：「{display_name}」"
+            line3 = f"累计已执行 {count} 次"
+            return line2, "info", CLR_STATUS_WARN, line3, "check", CLR_BTN_SUCCESS
+
+        # 2. 运行时长限制: 已达到最大运行时间 {minutes} 分钟，自动停止
+        m2 = re.search(r"最大运行时间\s*(\d+)\s*分钟", reason)
+        if m2:
+            minutes = m2.group(1)
+            line2 = "挂机时长达标"
+            line3 = f"已达到 {minutes} 分钟"
+            return line2, "info", CLR_STATUS_WARN, line3, "timer", CLR_STATUS_WARN
+
+        # 3. 停止图片匹配: 已检测到停止图片（匹配度 {score}%），自动停止
+        m3 = re.search(r"匹配度\s*(\d+)%", reason)
+        if m3:
+            score = m3.group(1)
+            line2 = "目标图片命中"
+            line3 = f"匹配度 {score}%"
+            return line2, "info", CLR_STATUS_WARN, line3, "check", CLR_BTN_SUCCESS
+        elif "停止图片" in reason:
+            line2 = "目标图片命中"
+            line3 = "检测到停止图"
+            return line2, "info", CLR_STATUS_WARN, line3, "check", CLR_BTN_SUCCESS
+
+        # 4. 无匹配超时: 连续 {minutes} 分钟未匹配到任何图片，自动停止
+        m4 = re.search(r"连续\s*(\d+)\s*分钟未匹配", reason)
+        if m4:
+            minutes = m4.group(1)
+            line2 = "画面无任何匹配"
+            line3 = f"已空转 {minutes} 分钟"
+            return line2, "info", CLR_STATUS_WARN, line3, "hourglass", CLR_STATUS_WARN
+
+        # 兜底通用处理
+        clean = reason.replace("，自动停止", "").replace("自动停止", "").strip()
+        if not clean:
+            return "条件停止", "info", CLR_STATUS_WARN, "—", "timer", CLR_TEXT_SUB
+        if len(clean) <= 8:
+            return clean, "info", CLR_STATUS_WARN, "—", "timer", CLR_TEXT_SUB
+        return clean[:8], "info", CLR_STATUS_WARN, clean[8:16], "check", CLR_BTN_SUCCESS
+
     def _apply_condition_stop_ui(self, reason: str = "") -> None:
-        """更新状态栏为条件停止 + 同步悬浮窗 + 恢复窗口 (BUG-06, P1-3)."""
+        """更新状态栏为条件停止 + 同步悬浮窗 + 恢复窗口 (BUG-06, 方案A结构化呈现)."""
         self.sidebar.set_engine_running(False)  # 必须置为 False，确保手机端 is_running 匹配
         self.sidebar.status_line1.setText("已自动停止")
         self._set_sidebar_icon(1, "octagon", CLR_STATUS_WARN)
-        short_reason = reason if len(reason) <= 7 else reason[:6] + "…"
-        self.sidebar.status_line2.setText(short_reason)
-        self.sidebar.status_line2.setToolTip(reason)
-        self._set_sidebar_icon(2, "info", CLR_STATUS_WARN)  # 补齐原有 icon2
-        self.sidebar.status_line3.setText("—")
-        self._set_sidebar_icon(3, "timer")                   # 补齐原有 icon3
+
+        line2_text, icon2_key, icon2_color, line3_text, icon3_key, icon3_color = self._parse_stop_reason_lines(reason)
+
+        self.sidebar.status_line2.setText(line2_text)
+        self._set_sidebar_icon(2, icon2_key, icon2_color)
+
+        self.sidebar.status_line3.setText(line3_text)
+        self._set_sidebar_icon(3, icon3_key, icon3_color)
+
+        # 扩大主窗口左下角 ToolTip 响应热区：覆盖所有 3 行文字与图标
+        for w in (
+            self.sidebar.status_line1, self.sidebar.status_icon1,
+            self.sidebar.status_line2, self.sidebar.status_icon2,
+            self.sidebar.status_line3, self.sidebar.status_icon3,
+        ):
+            w.setToolTip(reason)
 
         self._restore_window_if_auto_minimized()
         if self._floating_widget and self._floating_widget.isVisible():
@@ -740,6 +801,12 @@ class MainWindow(QMainWindow):
 
         self._save_config()  # 参数校验全部通过后自动存盘 (BUG-09)
         self._stop_reason = ""
+        for w in (
+            self.sidebar.status_line1, self.sidebar.status_icon1,
+            self.sidebar.status_line2, self.sidebar.status_icon2,
+            self.sidebar.status_line3, self.sidebar.status_icon3,
+        ):
+            w.setToolTip("")
         self._set_engine_controls_locked(True)  # 启动前统一锁定卡片与条件页 (BUG-09)
 
         self._engine = EngineThread(
@@ -846,6 +913,13 @@ class MainWindow(QMainWindow):
         self._set_sidebar_icon(2, "mouse", CLR_TEXT_SUB)
         sb.status_line3.setText("—")
         self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
+
+        for w in (
+            sb.status_line1, sb.status_icon1,
+            sb.status_line2, sb.status_icon2,
+            sb.status_line3, sb.status_icon3,
+        ):
+            w.setToolTip("")
 
         # 统一同步悬浮窗状态（引擎停止完成后）
         if self._floating_widget and self._floating_widget.isVisible():

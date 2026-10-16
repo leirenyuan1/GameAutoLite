@@ -107,18 +107,27 @@ class FloatingWidget(QWidget):
         return icon_lbl, text_lbl
 
     def sync_from_sidebar(self, sb):
-        """从 SideBar 同步所有状态（图标位图 + 文本 + 运行标志）"""
+        """从 SideBar 同步所有状态（图标位图 + 文本 + 运行标志 + ToolTip）"""
         self.status_icon1.setPixmap(sb.status_icon1.pixmap())
         self.status_line1.setText(sb.status_line1.text())
         self.status_line1.setStyleSheet(sb.status_line1.styleSheet())
+        self.status_line1.setToolTip(sb.status_line1.toolTip())
+        self.status_icon1.setToolTip(sb.status_icon1.toolTip())
 
         self.status_icon2.setPixmap(sb.status_icon2.pixmap())
         self.status_line2.setText(sb.status_line2.text())
         self.status_line2.setStyleSheet(sb.status_line2.styleSheet())
+        self.status_line2.setToolTip(sb.status_line2.toolTip())
+        self.status_icon2.setToolTip(sb.status_icon2.toolTip())
 
         self.status_icon3.setPixmap(sb.status_icon3.pixmap())
         self.status_line3.setText(sb.status_line3.text())
         self.status_line3.setStyleSheet(sb.status_line3.styleSheet())
+        self.status_line3.setToolTip(sb.status_line3.toolTip())
+        self.status_icon3.setToolTip(sb.status_icon3.toolTip())
+
+        # 悬浮窗整体挂载 ToolTip，鼠标悬停在悬浮窗任意位置均可看到完整停止原因
+        self.setToolTip(sb.status_line2.toolTip())
 
         self._engine_running = sb.is_running()
         self.btn_toggle.setText(sb.btn_toggle.text())
