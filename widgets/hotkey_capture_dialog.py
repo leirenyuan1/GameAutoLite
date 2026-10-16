@@ -176,7 +176,7 @@ class HotkeyCaptureDialog(QDialog):
     def _lock_hotkey(self) -> None:
         """锁定当前键组合为最终快捷键。"""
         if self._captured_keys:
-            # 使用与 _update_display 一致的排序：修饰键优先，其余按字母序
+            # 使用与 _refresh_capture_state 一致的排序：修饰键优先，其余按字母序
             parts = sorted(self._captured_keys, key=lambda k: (k not in _MODIFIERS, k))
             # 显式转小写：虽然 _KEY_MAP 值全是小写，但防御性编程避免扩展时引入大小写 bug
             self._hotkey_string = "+".join(p.lower() for p in parts)

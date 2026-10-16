@@ -517,33 +517,26 @@ class CollapsibleTaskCard(QFrame):
         self._update_image_warning()
 
     def _on_screenshot_capture(self) -> None:
-        """通过 overlay 框选屏幕区域, 截图并保存为模板图片."""
+        """通过 overlay 框选屏幕区域, 截图并保存为模板图片 (BUG-01, BUG-02, BUG-03)."""
         main_win = self.window()
-        geom = main_win.geometry() if main_win else None
-        if main_win and main_win.isVisible():
-            main_win._suppress_floating = True  # 抑制悬浮窗显示
-            main_win.showMinimized()  # 最小化到任务栏，避免标题栏残留
+        state = main_win.prepare_selection_mode() if main_win else None
+        img = None
         try:
             result = overlay_selector.get_region()
+            if result is not None:
+                x, y, w, h = result
+                try:
+                    with mss.mss() as sct:
+                        monitor = {"top": y, "left": x, "width": w, "height": h}
+                        sct_img = sct.grab(monitor)
+                        img = np.ascontiguousarray(np.array(sct_img)[:, :, :3])
+                except Exception as e:
+                    logger.error(f"截图捕获失败: {e}")
         finally:
-            if main_win:
-                main_win._suppress_floating = False  # 恢复悬浮窗控制
-                if geom:
-                    main_win.setGeometry(geom)
-                main_win.showNormal()  # 从任务栏恢复
-        if result is None:
-            return
-        x, y, w, h = result
+            if main_win and state:
+                main_win.restore_after_selection(state)
 
-        # 截取选定区域
-        try:
-            with mss.mss() as sct:
-                monitor = {"top": y, "left": x, "width": w, "height": h}
-                sct_img = sct.grab(monitor)
-                img = np.array(sct_img)
-                img = np.ascontiguousarray(img[:, :, :3])
-        except Exception as e:
-            logger.error(f"截图捕获失败: {e}")
+        if img is None:
             return
 
         # 保存到 exe/脚本所在目录的 screenshots 子目录
@@ -665,23 +658,17 @@ class CollapsibleTaskCard(QFrame):
         self.label_threshold.setText(f"{value}%")
 
     def _on_set_region(self) -> None:
-        # 隐藏主窗口避免遮挡
+        """设定点击区域 (BUG-01, BUG-02, BUG-03)."""
         main_win = self.window()
-        geom = main_win.geometry() if main_win else None
-        if main_win and main_win.isVisible():
-            main_win._suppress_floating = True  # 抑制悬浮窗显示
-            main_win.showMinimized()  # 最小化到任务栏，避免标题栏残留
+        state = main_win.prepare_selection_mode() if main_win else None
         try:
             if self._multi_region:
                 result = overlay_selector.get_regions()
             else:
                 result = overlay_selector.get_region()
         finally:
-            if main_win:
-                main_win._suppress_floating = False  # 恢复悬浮窗控制
-                if geom:
-                    main_win.setGeometry(geom)
-                main_win.showNormal()  # 从任务栏恢复
+            if main_win and state:
+                main_win.restore_after_selection(state)
         if self._multi_region:
             if result:  # 非空列表
                 self._regions = result

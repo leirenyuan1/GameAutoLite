@@ -33,9 +33,16 @@ class EngineThread(QThread):
         self._stop_conditions = stop_conditions or {}
         self._stop_event = threading.Event()
         self._template_cache: dict[str, object] = {}
+        self._last_status_text: str = ""
+
+    def _emit_status(self, text: str) -> None:
+        """相同状态文本不重复 emit 信号，防止高频重绘 (BUG-10)."""
+        if text != self._last_status_text:
+            self._last_status_text = text
+            self.status_update.emit(text)
 
     def run(self) -> None:
-        self.status_update.emit("运行中...")
+        self._emit_status("运行中...")
         start_time = time.time()
         task_match_counts: dict[str, int] = {}
         last_match_time = time.time()
@@ -79,8 +86,8 @@ class EngineThread(QThread):
                 screenshot = image_engine.take_screenshot()
             except Exception as e:
                 logger.error(f"截图失败: {e}")
-                self.status_update.emit("截图失败, 1秒后重试...")
-                time.sleep(1)
+                self._emit_status("截图失败, 1秒后重试...")
+                self._sleep_interruptible(1.0)
                 continue
 
             # 条件三：识别到指定图片（截图成功后、遍历任务前）
@@ -115,7 +122,7 @@ class EngineThread(QThread):
                     # 3. 匹配成功 → 随机延迟
                     _dmin, _dmax = cfg["delay_min"], cfg["delay_max"]
                     delay_ms = random.randint(_dmin, max(_dmin, _dmax))
-                    self.status_update.emit(
+                    self._emit_status(
                         f"匹配到「{cfg['name']}」, 延迟 {delay_ms}ms 后点击"
                     )
                     self._sleep_interruptible(delay_ms / 1000.0)
@@ -137,6 +144,7 @@ class EngineThread(QThread):
                                     regions,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
+                                    stop_event=self._stop_event,
                                 )
                         elif cfg.get("click_on_match", False):
                             rx, ry, rw, rh = result
@@ -145,6 +153,7 @@ class EngineThread(QThread):
                                     rx, ry, rw, rh,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
+                                    stop_event=self._stop_event,
                                 )
                             else:
                                 mouse_controller.click_in_region_multi(
@@ -160,6 +169,7 @@ class EngineThread(QThread):
                                     rx, ry, rw, rh,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
+                                    stop_event=self._stop_event,
                                 )
                             else:
                                 mouse_controller.click_in_region_multi(
@@ -176,7 +186,7 @@ class EngineThread(QThread):
                     _cmax = cfg.get("cooldown_max", 0)
                     cooldown_ms = random.randint(_cmin, max(_cmin, _cmax))
                     if not self._stop_event.is_set():
-                        self.status_update.emit(
+                        self._emit_status(
                             f"点击完成, 冷却 {cooldown_ms}ms"
                         )
                         if cooldown_ms > 0:
@@ -204,17 +214,15 @@ class EngineThread(QThread):
                     break
 
             if not matched and not self._stop_event.is_set():
-                self.status_update.emit("运行中...")
+                self._emit_status("运行中...")
                 if self._scan_interval > 0:
                     self._sleep_interruptible(self._scan_interval / 1000.0)
 
-        self.status_update.emit("已停止")
+        self._emit_status("已停止")
 
     def _sleep_interruptible(self, seconds: float) -> None:
-        """可被打断的 sleep, 每 50ms 检查一次停止标志."""
-        end = time.time() + seconds
-        while time.time() < end and not self._stop_event.is_set():
-            time.sleep(0.05)
+        """可被打断的 sleep，使用 Event.wait 实现毫秒级精确等待与即时响应 (BUG-07, BUG-10)."""
+        self._stop_event.wait(timeout=max(0.0, seconds))
 
     def stop(self) -> None:
         self._stop_event.set()

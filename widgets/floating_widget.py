@@ -218,7 +218,7 @@ class FloatingWidget(QWidget):
 
         anim = QPropertyAnimation(self, b"windowOpacity")
         anim.setDuration(200)
-        anim.setStartValue(1.0)
+        anim.setStartValue(self.windowOpacity())
         anim.setEndValue(0.0)
         anim.finished.connect(self.hide)
         anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)

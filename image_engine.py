@@ -80,6 +80,10 @@ def find_template(
     否则返回 None.
     匹配过程出错时返回 None 并记录日志, 不崩溃.
     """
+    if template is None or screenshot is None:
+        return None
+    if template.shape[0] > screenshot.shape[0] or template.shape[1] > screenshot.shape[1]:
+        return None
     try:
         result = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)

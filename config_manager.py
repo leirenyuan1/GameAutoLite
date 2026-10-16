@@ -3,6 +3,7 @@
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -127,8 +128,9 @@ def parse_scheme_file(path: str) -> tuple[list[dict], dict | None, str, str]:
 def restore_task_image(item: dict) -> dict:
     """
     检查单条任务配置里的图片路径是否有效，若丢失则尝试：
-      1. screenshots/ 目录下同名文件
-      2. base64 解码还原
+      1. 原路径有效直接使用；
+      2. base64 解码还原并以 {stem}_{hash8}.png 存储（消除同名老图错绑 BUG-08）；
+      3. screenshots/ 目录下寻找同名文件兜底。
     返回修改后的 item（原地修改并返回）。
     """
     img_path = item.get("image_path", "")
@@ -136,23 +138,32 @@ def restore_task_image(item: dict) -> dict:
         return item  # 原图还在，直接用
 
     img_filename = item.get("image_filename", "")
-    if not img_filename:
-        return item
+    img_data = item.get("image_data")
 
-    restored_path = os.path.join(SCREENSHOTS_DIR, img_filename)
-    if os.path.exists(restored_path):
-        item["image_path"] = restored_path
-        return item
-
-    if item.get("image_data"):
+    if img_data:
         try:
-            img_bytes = base64.b64decode(item["image_data"])
-            os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-            with open(restored_path, "wb") as img_f:
-                img_f.write(img_bytes)
+            img_bytes = base64.b64decode(img_data)
+            stem, ext = os.path.splitext(img_filename) if img_filename else ("task_img", ".png")
+            if not ext:
+                ext = ".png"
+            hash8 = hashlib.sha256(img_bytes).hexdigest()[:8]
+            target_filename = f"{stem}_{hash8}{ext}"
+            restored_path = os.path.join(SCREENSHOTS_DIR, target_filename)
+            if not os.path.exists(restored_path):
+                os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+                with open(restored_path, "wb") as img_f:
+                    img_f.write(img_bytes)
             item["image_path"] = restored_path
+            return item
         except Exception as e:
             logger.error(f"从方案还原图片失败: {e}")
+
+    # 若无 base64 或解析失败，回退尝试同名文件
+    if img_filename:
+        restored_path = os.path.join(SCREENSHOTS_DIR, img_filename)
+        if os.path.exists(restored_path):
+            item["image_path"] = restored_path
+            return item
 
     return item
 
@@ -163,22 +174,29 @@ def restore_stop_image(
     current_stop_image_path: str | None,
 ) -> str | None:
     """
-    优先还原导入文件中的停止图片；失败时 fallback 当前图片，返回有效路径或 None。
+    优先还原导入文件中的停止图片（带 hash8 命名防错绑）；失败时 fallback 当前图片，返回有效路径或 None。
     """
+    if stop_image_data:
+        try:
+            img_bytes = base64.b64decode(stop_image_data)
+            stem, ext = os.path.splitext(stop_image_filename) if stop_image_filename else ("stop_capture", ".png")
+            if not ext:
+                ext = ".png"
+            hash8 = hashlib.sha256(img_bytes).hexdigest()[:8]
+            target_filename = f"{stem}_{hash8}{ext}"
+            restored_path = os.path.join(SCREENSHOTS_DIR, target_filename)
+            if not os.path.exists(restored_path):
+                os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+                with open(restored_path, "wb") as img_f:
+                    img_f.write(img_bytes)
+            return restored_path
+        except Exception as e:
+            logger.error(f"从方案还原停止条件图片失败: {e}")
+
     if stop_image_filename:
         restored_path = os.path.join(SCREENSHOTS_DIR, stop_image_filename)
         if os.path.exists(restored_path):
             return restored_path
-
-        if stop_image_data:
-            try:
-                img_bytes = base64.b64decode(stop_image_data)
-                os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-                with open(restored_path, "wb") as img_f:
-                    img_f.write(img_bytes)
-                return restored_path
-            except Exception as e:
-                logger.error(f"从方案还原停止条件图片失败: {e}")
 
     # 导入文件无图或还原失败 → 沿用当前有效图片
     if current_stop_image_path and os.path.exists(current_stop_image_path):

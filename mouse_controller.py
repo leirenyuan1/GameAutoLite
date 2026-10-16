@@ -24,17 +24,20 @@ def _real_click(speed: float = 1.0) -> None:
     严禁使用任何封装好的 click() 函数, 必须拆分为:
       1. mouse_event LEFTDOWN   -- 按下
       2. sleep(50~150ms)        -- 随机停留
-      3. mouse_event LEFTUP     -- 松开
+      3. mouse_event LEFTUP     -- 松开（try...finally 保证 100% 触发）
     """
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
-    time.sleep(random.uniform(0.05, 0.15) / speed)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+    try:
+        time.sleep(random.uniform(0.05, 0.15) / speed)
+    finally:
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
 
 
-def _bezier_move(tx: int, ty: int, speed: float = 1.0) -> None:
+def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
     """
     四阶贝塞尔曲线移动鼠标到目标点(tx, ty).
     包含: 随机控制点偏移 + 物理惯性速度曲线 + 路径抖动 + 动态耗时.
+    支持通过 stop_event 在移动过程中毫秒级打断并返回 False.
     """
     sx, sy = win32api.GetCursorPos()
 
@@ -82,6 +85,8 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0) -> None:
 
     # 逐点移动
     for i in range(num_samples):
+        if stop_event and stop_event.is_set():
+            return False
         t = i / (num_samples - 1) if num_samples > 1 else 0
 
         # 四阶贝塞尔公式: B(t) = (1-t)^4*P0 + 4(1-t)^3*t*P1 + 6(1-t)^2*t^2*P2 + 4(1-t)*t^3*P3 + t^4*P4
@@ -114,45 +119,54 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0) -> None:
 
         win32api.SetCursorPos((int(px), int(py)))
         time.sleep(step_time)
+    return True
 
 
-def click_in_region(x: int, y: int, w: int, h: int, move_speed: float = 1.0, click_speed: float = 1.0) -> None:
+def click_in_region(
+    x: int, y: int, w: int, h: int,
+    move_speed: float = 1.0,
+    click_speed: float = 1.0,
+    stop_event=None,
+) -> bool:
     """
     在矩形区域内随机取点, 贝塞尔曲线移动过去, 执行真实按压点击.
     调用方只需传入区域坐标, 内部自动完成全部步骤.
-
-    参数:
-        x, y: 矩形左上角坐标
-        w, h: 矩形宽高
+    若移动途中被 stop_event 打断, 则立即返回 False 并不执行真实点击.
     """
     # 第一步: 在区域内均匀随机取点(禁止取中心点)
     tx = random.randint(x, x + w)
     ty = random.randint(y, y + h)
 
     # 第二步: 贝塞尔曲线移动到目标点
-    _bezier_move(tx, ty, move_speed)
+    if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
+        return False
 
     # 第三步: 真实按压点击
     _real_click(click_speed)
+    return True
 
 
 def click_in_regions(
     regions: list,
     move_speed: float = 1.0,
     click_speed: float = 1.0,
-) -> None:
+    stop_event=None,
+) -> bool:
     """
     从多个区域中按面积加权随机选一个, 再在其中随机取点点击.
     大区域被选中的概率更高, 行为更自然.
+    若移动途中被 stop_event 打断, 则立即返回 False.
     """
     if not regions:
-        return
+        return False
     weights = [w * h for _, _, w, h in regions]
     x, y, w, h = random.choices(regions, weights=weights, k=1)[0]
     tx = random.randint(x, x + w)
     ty = random.randint(y, y + h)
-    _bezier_move(tx, ty, move_speed)
+    if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
+        return False
     _real_click(click_speed)
+    return True
 
 
 def click_in_region_multi(
@@ -171,7 +185,8 @@ def click_in_region_multi(
     """
     tx = random.randint(x, x + w)
     ty = random.randint(y, y + h)
-    _bezier_move(tx, ty, move_speed)
+    if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
+        return
     _real_click(click_speed)
 
     for i in range(1, count):
@@ -193,5 +208,6 @@ def click_in_region_multi(
         tx = max(x, min(x + w, tx + dx))
         ty = max(y, min(y + h, ty + dy))
 
-        _bezier_move(tx, ty, move_speed)
+        if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
+            return
         _real_click(click_speed)

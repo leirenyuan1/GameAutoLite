@@ -253,33 +253,57 @@ class MainWindow(QMainWindow):
             f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
         )
 
+    # ---- 选区准备与恢复 (BUG-01, BUG-02, BUG-03) ----
+
+    def prepare_selection_mode(self) -> dict:
+        """选区开始前隐藏主窗口与悬浮窗，记录完整几何与最大化状态."""
+        state = {
+            "geom": self.geometry(),
+            "was_maximized": self.isMaximized(),
+            "floating_was_visible": bool(self._floating_widget and self._floating_widget.isVisible())
+        }
+        self._suppress_floating = True
+        if state["floating_was_visible"]:
+            self._floating_widget.hide()
+        if self.isVisible():
+            self.showMinimized()
+        return state
+
+    def restore_after_selection(self, state: dict) -> None:
+        """选区完成后精准恢复主窗口（含最大化支持）与悬浮窗."""
+        self._suppress_floating = False
+        if state.get("was_maximized"):
+            self.showMaximized()
+        else:
+            self.showNormal()  # 必须先 showNormal() 再 setGeometry()，确保 Windows DWM 布局生效
+            if state.get("geom"):
+                self.setGeometry(state["geom"])
+        if state.get("floating_was_visible") and self.chk_always_floating.isChecked():
+            self._sync_and_show_floating()
+
     def _on_stop_img_capture(self) -> None:
-        """条件三：截图选取."""
+        """条件三：截图选取 (BUG-01, BUG-02, BUG-03)."""
         main_win = self.window()
-        geom = main_win.geometry() if main_win else None
-        if main_win and main_win.isVisible():
-            main_win._suppress_floating = True
-            main_win.showMinimized()
+        state = main_win.prepare_selection_mode() if main_win else None
+        img = None
         try:
             result = overlay_selector.get_region()
+            if result is not None:
+                x, y, w, h = result
+                try:
+                    with mss.mss() as sct:
+                        monitor = {"top": y, "left": x, "width": w, "height": h}
+                        sct_img = sct.grab(monitor)
+                        img = np.ascontiguousarray(np.array(sct_img)[:, :, :3])
+                except Exception as e:
+                    logger.error(f"截图捕获失败: {e}")
         finally:
-            if main_win:
-                main_win._suppress_floating = False
-                if geom:
-                    main_win.setGeometry(geom)
-                main_win.showNormal()
-        if result is None:
+            if main_win and state:
+                main_win.restore_after_selection(state)
+
+        if img is None:
             return
-        x, y, w, h = result
-        try:
-            with mss.mss() as sct:
-                monitor = {"top": y, "left": x, "width": w, "height": h}
-                sct_img = sct.grab(monitor)
-                img = np.array(sct_img)
-                img = np.ascontiguousarray(img[:, :, :3])
-        except Exception as e:
-            logger.error(f"截图捕获失败: {e}")
-            return
+
         save_dir = SCREENSHOTS_DIR
         os.makedirs(save_dir, exist_ok=True)
         timestamp = int(time.time() * 1000)
@@ -1135,6 +1159,12 @@ class MainWindow(QMainWindow):
 
         if msg.clickedButton() == btn_replace:
             self._clear_tasks_no_anim()
+            self._stop_image_path = None
+            self.stop_img_preview.setText("无图片")
+            self.stop_img_preview.setStyleSheet(
+                f"border: 2px dashed {CLR_CARD_BORDER}; color: {CLR_TEXT_SUB}; font-size: 11px;"
+                "border-radius: 6px;"
+            )
 
         # 新增模式 + 方案的停止条件总开关启用 → 询问是否覆盖当前停止条件
         # （export_scheme 会无条件写入 stop_conditions 字段，必须按 enabled 判断，
@@ -1180,8 +1210,7 @@ class MainWindow(QMainWindow):
         if apply_stop_conditions:
             # 还原停止条件图片
             restored = restore_stop_image(stop_image_filename, stop_image_data, self._stop_image_path)
-            if restored:
-                self._stop_image_path = restored
+            self._stop_image_path = restored
 
             if self._stop_image_path and os.path.exists(self._stop_image_path):
                 pixmap = QPixmap(self._stop_image_path)
@@ -1190,6 +1219,15 @@ class MainWindow(QMainWindow):
                         60, 60, Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation
                     ))
+                    self.stop_img_preview.setStyleSheet(
+                        f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
+                    )
+            elif msg.clickedButton() == btn_replace or not self._stop_image_path:
+                self.stop_img_preview.setText("无图片")
+                self.stop_img_preview.setStyleSheet(
+                    f"border: 2px dashed {CLR_CARD_BORDER}; color: {CLR_TEXT_SUB}; font-size: 11px;"
+                    "border-radius: 6px;"
+                )
 
             # 恢复停止条件配置（开关状态、参数值）
             if imported_stop_conditions and isinstance(imported_stop_conditions, dict):
