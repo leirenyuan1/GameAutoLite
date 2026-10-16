@@ -115,6 +115,13 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
         <button class="btn btn-start" onclick="submitToken()">连接</button>
     </div>
 
+    <div class="card" id="stop-card" style="display:none; background:#FFEBEE; border:1px solid #FFCDD2; color:#C62828;">
+        <div style="display:flex; align-items:center; gap:8px;">
+            <span id="stop-icon" style="width:20px; text-align:center;"></span>
+            <span id="stop-text" style="font-size:13px; font-weight:500;"></span>
+        </div>
+    </div>
+
     <div class="card">
         <div class="status-row">
             <span class="status-icon" id="icon1"></span>
@@ -156,7 +163,7 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
         // idle:  无 token / 401 -> 停轮询, 显示令牌输入卡
         // checking: 有 token 首次校验中（一次性请求）
         // valid: 校验通过 -> 恢复轮询
-        let token = location.hash.startsWith('#tk=') ? location.hash.slice(4) : '';
+        let token = location.hash.startsWith('#tk=') ? location.hash.slice(4) : (localStorage.getItem('rm_token') || '');
         let authState = token ? 'checking' : 'idle';
 
         function authHeaders() { return { 'X-Auth-Token': token }; }
@@ -179,6 +186,40 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
             bar.style.color = '#EF5350';
         }
 
+        // 渲染状态卡片 (BUG-06, BUG-11: 抽取公共函数消除重复请求)
+        function renderStatus(data) {
+            setStatusIcon(document.getElementById('icon1'), data.icon1);
+            document.getElementById('line1').textContent = data.line1;
+            setStatusIcon(document.getElementById('icon2'), data.icon2);
+            document.getElementById('line2').textContent = data.line2;
+            setStatusIcon(document.getElementById('icon3'), data.icon3);
+            document.getElementById('line3').textContent = data.line3;
+
+            const btn = document.getElementById('toggle-btn');
+            if (data.is_running) {
+                btn.innerHTML = icon('stop', 16) + ' 停止';
+                btn.className = 'btn btn-stop';
+            } else {
+                btn.innerHTML = icon('play', 16) + ' 开始';
+                btn.className = 'btn btn-start';
+            }
+
+            const stopCard = document.getElementById('stop-card');
+            if (stopCard) {
+                if (data.stop_reason && !data.is_running) {
+                    document.getElementById('stop-icon').innerHTML = icon('octagon', 16, '#EF5350');
+                    document.getElementById('stop-text').textContent = '自动停止: ' + data.stop_reason;
+                    stopCard.style.display = 'block';
+                } else {
+                    stopCard.style.display = 'none';
+                }
+            }
+
+            const bar = document.getElementById('status-bar');
+            bar.innerHTML = icon('check', 16, '#43A047') + ' 已连接';
+            bar.style.color = '#43A047';
+        }
+
         // 一次性校验token: 通过 -> 落库localStorage + 恢复轮询; 401 -> 输入卡
         function validateAndStart() {
             authState = 'checking';
@@ -193,7 +234,7 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
                     localStorage.setItem('rm_token', token);
                     document.getElementById('token-card').style.display = 'none';
                     authState = 'valid';
-                    updateStatus();
+                    renderStatus(data);
                     startPolling();
                 })
                 .catch(() => enterTokenScreen('无法连接服务器，请检查网络'));
@@ -248,25 +289,7 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
                 })
                 .then(data => {
                     if (!data) return;
-                    setStatusIcon(document.getElementById('icon1'), data.icon1);
-                    document.getElementById('line1').textContent = data.line1;
-                    setStatusIcon(document.getElementById('icon2'), data.icon2);
-                    document.getElementById('line2').textContent = data.line2;
-                    setStatusIcon(document.getElementById('icon3'), data.icon3);
-                    document.getElementById('line3').textContent = data.line3;
-
-                    const btn = document.getElementById('toggle-btn');
-                    if (data.is_running) {
-                        btn.innerHTML = icon('stop', 16) + ' 停止';
-                        btn.className = 'btn btn-stop';
-                    } else {
-                        btn.innerHTML = icon('play', 16) + ' 开始';
-                        btn.className = 'btn btn-start';
-                    }
-
-                    const bar = document.getElementById('status-bar');
-                    bar.innerHTML = icon('check', 16, '#43A047') + ' 已连接';
-                    bar.style.color = '#43A047';
+                    renderStatus(data);
                 })
                 .catch(() => {
                     const bar = document.getElementById('status-bar');
@@ -336,11 +359,10 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
-# 从 styles/icons.py 单一数据源注入 JS 图标 body（模板保持普通字符串, 用 replace 占位符注入）
-_MOBILE_ICONS = ("zap", "mouse", "timer", "check", "stop", "play", "camera", "hourglass")
+# 从 styles/icons.py 单一数据源注入完整 JS 图标 body（BUG-11：全量注入，杜绝漏项）
 MOBILE_HTML_TEMPLATE = MOBILE_HTML_TEMPLATE.replace(
     "__ICON_BODY__",
-    ",\n        ".join('"%s": %s' % (k, json.dumps(_BODY[k])) for k in _MOBILE_ICONS),
+    ",\n        ".join('"%s": %s' % (k, json.dumps(v)) for k, v in _BODY.items()),
 )
 
 
@@ -454,16 +476,74 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def get_local_ip() -> str:
-    """获取本机局域网IP地址"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+def _is_blacklisted_ip(ip: str) -> bool:
+    """检查 IP 是否属于黑名单 (0.*, 127.*, 169.254.*, 198.18.*, 198.19.*)"""
+    if not ip:
+        return True
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return True
     try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
+        p0, p1 = int(parts[0]), int(parts[1])
+    except ValueError:
+        return True
+    if p0 == 0 or p0 == 127:
+        return True
+    if p0 == 169 and p1 == 254:
+        return True
+    if p0 == 198 and (p1 == 18 or p1 == 19):
+        return True
+    return False
+
+
+def _ip_priority(ip: str) -> int:
+    """网段优先级：192.168.* (0) > 10.* (1) > 172.16~31.* (2) > 其它 (3)"""
+    try:
+        parts = ip.split(".")
+        p0, p1 = int(parts[0]), int(parts[1])
+        if p0 == 192 and p1 == 168:
+            return 0
+        if p0 == 10:
+            return 1
+        if p0 == 172 and 16 <= p1 <= 31:
+            return 2
     except Exception:
-        return "127.0.0.1"
-    finally:
-        s.close()
+        pass
+    return 3
+
+
+def get_local_ip() -> str:
+    """获取本机局域网IP地址（BUG-12: 纯标准库三级链式策略）"""
+    # 第一级：默认出网路由（最优先）
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if ip and not _is_blacklisted_ip(ip):
+                return ip
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+    # 第二级：智能回退（防 TUN 劫持）
+    try:
+        hostname = socket.gethostname()
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET)
+        candidates = set()
+        for item in addr_info:
+            candidate_ip = item[4][0]
+            if candidate_ip and not _is_blacklisted_ip(candidate_ip):
+                candidates.add(candidate_ip)
+        if candidates:
+            sorted_candidates = sorted(list(candidates), key=_ip_priority)
+            return sorted_candidates[0]
+    except Exception:
+        pass
+
+    # 第三级：离线兜底
+    return "127.0.0.1"
 
 
 def start_server(main_window, max_port_attempts: int = 10) -> tuple[HTTPServer, threading.Thread, int]:

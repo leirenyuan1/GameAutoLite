@@ -143,7 +143,8 @@ def restore_task_image(item: dict) -> dict:
     if img_data:
         try:
             img_bytes = base64.b64decode(img_data)
-            stem, ext = os.path.splitext(img_filename) if img_filename else ("task_img", ".png")
+            clean_name = os.path.basename(img_filename) if img_filename else ""
+            stem, ext = os.path.splitext(clean_name) if clean_name else ("task_img", ".png")
             if not ext:
                 ext = ".png"
             hash8 = hashlib.sha256(img_bytes).hexdigest()[:8]
@@ -160,7 +161,7 @@ def restore_task_image(item: dict) -> dict:
 
     # 若无 base64 或解析失败，回退尝试同名文件
     if img_filename:
-        restored_path = os.path.join(SCREENSHOTS_DIR, img_filename)
+        restored_path = os.path.join(SCREENSHOTS_DIR, os.path.basename(img_filename))
         if os.path.exists(restored_path):
             item["image_path"] = restored_path
             return item
@@ -179,7 +180,8 @@ def restore_stop_image(
     if stop_image_data:
         try:
             img_bytes = base64.b64decode(stop_image_data)
-            stem, ext = os.path.splitext(stop_image_filename) if stop_image_filename else ("stop_capture", ".png")
+            clean_name = os.path.basename(stop_image_filename) if stop_image_filename else ""
+            stem, ext = os.path.splitext(clean_name) if clean_name else ("stop_capture", ".png")
             if not ext:
                 ext = ".png"
             hash8 = hashlib.sha256(img_bytes).hexdigest()[:8]
@@ -194,7 +196,7 @@ def restore_stop_image(
             logger.error(f"从方案还原停止条件图片失败: {e}")
 
     if stop_image_filename:
-        restored_path = os.path.join(SCREENSHOTS_DIR, stop_image_filename)
+        restored_path = os.path.join(SCREENSHOTS_DIR, os.path.basename(stop_image_filename))
         if os.path.exists(restored_path):
             return restored_path
 

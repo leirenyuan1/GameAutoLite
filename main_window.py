@@ -72,11 +72,13 @@ class MainWindow(QMainWindow):
         self._remote_server = None
         self._remote_thread = None
         self._remote_status_lock = threading.Lock()
+        self._stop_reason: str = ""
         self._remote_status_cache = {
             "icon1": {"key": "zap", "color": CLR_TEXT_SUB}, "line1": "就绪",
             "icon2": {"key": "mouse", "color": CLR_TEXT_SUB}, "line2": "—",
             "icon3": {"key": "timer", "color": CLR_TEXT_SUB}, "line3": "—",
-            "is_running": False
+            "is_running": False,
+            "stop_reason": "",
         }
 
         # 状态图标数据源（远程缓存协议使用; 初始与 sidebar 三行一致）
@@ -395,19 +397,12 @@ class MainWindow(QMainWindow):
             self.showNormal()
 
     def _on_stop_condition_met(self, reason: str) -> None:
-        """停止条件触发."""
+        """停止条件触发 (BUG-06: 消除桌面中央阻塞弹窗，状态持久化至侧边栏与手机端)."""
         self._stop_by_condition = True
 
         if not self._engine or not self._engine.isRunning():
-            # 守卫触发：引擎已快速结束或已被手动停止。
-            # 如果是手动停止（_manual_stop=True），不干涉（UI 已由 _on_engine_finished 更新）。
-            # 如果是条件触发导致引擎快速结束（_manual_stop=False），仍需更新 UI + 弹窗。
             if not self._manual_stop:
-                self._apply_condition_stop_ui()
-                msg = self._styled_msgbox()
-                msg.setWindowTitle("停止条件触发")
-                msg.setText(reason)
-                self._exec_msgbox_centered(msg)
+                self._apply_condition_stop_ui(reason)
             return
 
         try:
@@ -423,12 +418,7 @@ class MainWindow(QMainWindow):
             self._engine_dying = True
             self._engine.finished.connect(self._on_dying_engine_finished)  # 线程真正退出后再清理
 
-        self._apply_condition_stop_ui()
-
-        msg = self._styled_msgbox()
-        msg.setWindowTitle("停止条件触发")
-        msg.setText(reason)
-        self._exec_msgbox_centered(msg)
+        self._apply_condition_stop_ui(reason)
 
     def _set_sidebar_icon(self, idx: int, key: str, color: str | None = None) -> None:
         """
@@ -443,24 +433,27 @@ class MainWindow(QMainWindow):
         set_label_icon(lbl, key, color, ICON_STATUS)
         self._status_icons[f"icon{idx}"] = {"key": key, "color": color}
 
-    def _apply_condition_stop_ui(self) -> None:
-        """更新状态栏为条件停止 + 同步悬浮窗 + 恢复窗口."""
-        self.sidebar.set_engine_running(False)
-        self.sidebar.status_line1.setText("条件停止")
+    def _apply_condition_stop_ui(self, reason: str = "") -> None:
+        """更新状态栏为条件停止 + 同步悬浮窗 + 恢复窗口 (BUG-06, P1-3)."""
+        self.sidebar.set_engine_running(False)  # 必须置为 False，确保手机端 is_running 匹配
+        self.sidebar.status_line1.setText("已自动停止")
         self._set_sidebar_icon(1, "octagon", CLR_STATUS_WARN)
-        self.sidebar.status_line2.setText("自动停止")
-        self._set_sidebar_icon(2, "info", CLR_STATUS_WARN)
+        short_reason = reason if len(reason) <= 7 else reason[:6] + "…"
+        self.sidebar.status_line2.setText(short_reason)
+        self.sidebar.status_line2.setToolTip(reason)
+        self._set_sidebar_icon(2, "info", CLR_STATUS_WARN)  # 补齐原有 icon2
         self.sidebar.status_line3.setText("—")
-        self._set_sidebar_icon(3, "timer")
-
-        if self._floating_widget and self._floating_widget.isVisible():
-            self._floating_widget.sync_from_sidebar(self.sidebar)
+        self._set_sidebar_icon(3, "timer")                   # 补齐原有 icon3
 
         self._restore_window_if_auto_minimized()
-        self._update_remote_status_cache()  # 插入点D
+        if self._floating_widget and self._floating_widget.isVisible():
+            self._floating_widget.sync_from_sidebar(self.sidebar)
+        self._stop_reason = reason
+        self._update_remote_status_cache()
+        self._set_engine_controls_locked(False)
 
     def _update_remote_status_cache(self) -> None:
-        """更新远程监控状态缓存（线程安全）"""
+        """更新远程监控状态缓存（线程安全） (BUG-06)"""
         with self._remote_status_lock:
             sb = self.sidebar
             self._remote_status_cache = {
@@ -470,7 +463,8 @@ class MainWindow(QMainWindow):
                 "line2": sb.status_line2.text(),
                 "icon3": self._status_icons["icon3"],
                 "line3": sb.status_line3.text(),
-                "is_running": sb.is_running()
+                "is_running": sb.is_running(),
+                "stop_reason": self._stop_reason,
             }
 
     # 设置卡片计数器，用于生成唯一的 objectName
@@ -723,6 +717,8 @@ class MainWindow(QMainWindow):
         self._sync_settings_to_global()
         stop_conditions = self._global_settings.get("stop_conditions", {"enabled": False})
 
+        # 警告 tooltip 无条件预清理（P2-6 / R5）
+        self.sidebar.nav_stop.setToolTip("")
         if stop_conditions.get("enabled"):
             warnings: list[str] = []
             cond1 = stop_conditions.get("task_exec_count", {})
@@ -739,10 +735,12 @@ class MainWindow(QMainWindow):
                     warnings.append("条件三的图片文件不存在或已被移动，该条件将不会生效")
                     stop_conditions["image_match_stop"]["enabled"] = False
             if warnings:
-                msg = self._styled_msgbox()
-                msg.setWindowTitle("停止条件校验")
-                msg.setText("以下停止条件存在问题：\n\n" + "\n".join(f"• {w}" for w in warnings))
-                self._exec_msgbox_centered(msg)
+                self.sidebar.nav_stop.setToolTip(f"停止条件警告: {'; '.join(warnings)}")
+                logger.warning(f"停止条件警告: {'; '.join(warnings)}")
+
+        self._save_config()  # 参数校验全部通过后自动存盘 (BUG-09)
+        self._stop_reason = ""
+        self._set_engine_controls_locked(True)  # 启动前统一锁定卡片与条件页 (BUG-09)
 
         self._engine = EngineThread(
             configs,
@@ -839,6 +837,7 @@ class MainWindow(QMainWindow):
         if self._stop_by_condition:
             return
 
+        self._stop_reason = ""
         self.sidebar.set_engine_running(False)
         sb = self.sidebar
         sb.status_line1.setText("就绪")
@@ -854,6 +853,7 @@ class MainWindow(QMainWindow):
 
         self._restore_window_if_auto_minimized()
         self._update_remote_status_cache()  # 插入点C
+        self._set_engine_controls_locked(False)
 
     def _on_dying_engine_finished(self) -> None:
         """wait 超时后旧引擎线程真正退出时的清理（此时线程已结束，可安全置 None）。"""
@@ -1013,7 +1013,7 @@ class MainWindow(QMainWindow):
                 self._moveAnimating = False
                 self._refresh_move_buttons()
                 for c in self._task_cards:
-                    c.btn_delete.setEnabled(True)
+                    c.btn_delete.setEnabled(not self.sidebar.is_running())
                 self._scroll.ensureWidgetVisible(card)
 
             anim.finished.connect(on_done)
@@ -1023,7 +1023,7 @@ class MainWindow(QMainWindow):
             self._moveAnimating = False
             self._refresh_move_buttons()
             for c in self._task_cards:
-                c.btn_delete.setEnabled(True)
+                c.btn_delete.setEnabled(not self.sidebar.is_running())
             self._scroll.ensureWidgetVisible(card)
 
     def _reorder_all_cards(self) -> None:
@@ -1037,9 +1037,26 @@ class MainWindow(QMainWindow):
             self._card_layout.insertWidget(insert_pos + i, card)
 
     def _refresh_move_buttons(self) -> None:
+        """刷新上下移按钮状态（带运行期保护 R4）"""
+        if self.sidebar.is_running():
+            for card in self._task_cards:
+                card.btn_up.setEnabled(False)
+                card.btn_down.setEnabled(False)
+            return
         n = len(self._task_cards)
         for i, card in enumerate(self._task_cards):
             card.update_move_buttons(is_first=(i == 0), is_last=(i == n - 1))
+
+    def _set_engine_controls_locked(self, locked: bool) -> None:
+        """统一锁定/解锁引擎运行期控件 (BUG-09)."""
+        self.btn_add.setEnabled(not locked)
+        self.btn_import.setEnabled(not locked)
+        self.btn_export.setEnabled(not locked)
+        self._stop_conditions_page.set_controls_enabled(not locked)
+        for card in self._task_cards:
+            card.set_running_locked(locked)
+        if not locked:
+            self._refresh_move_buttons()  # 解锁时按首尾位置精确恢复上下移按钮
 
     def _sync_settings_to_global(self) -> None:
         """同步所有 UI 控件的当前值到 _global_settings."""
@@ -1222,7 +1239,7 @@ class MainWindow(QMainWindow):
                     self.stop_img_preview.setStyleSheet(
                         f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
                     )
-            elif msg.clickedButton() == btn_replace or not self._stop_image_path:
+            elif msg.clickedButton() == btn_replace or not self._stop_image_path or not os.path.exists(self._stop_image_path or ""):
                 self.stop_img_preview.setText("无图片")
                 self.stop_img_preview.setStyleSheet(
                     f"border: 2px dashed {CLR_CARD_BORDER}; color: {CLR_TEXT_SUB}; font-size: 11px;"
@@ -1282,6 +1299,7 @@ class MainWindow(QMainWindow):
     # ---- 配置持久化 ----
 
     def _save_config(self) -> None:
+        self._sync_settings_to_global()
         save_config(
             self._global_settings,
             [card.to_dict() for card in self._task_cards],

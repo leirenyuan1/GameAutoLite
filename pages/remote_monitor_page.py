@@ -29,6 +29,7 @@ class RemoteMonitorPage(QWidget):
         self._thread = None
         self._port = None
         self._token = None  # 本次服务启动的访问令牌（每次启动随机, 不持久化）
+        self._current_url = ""  # 真实 URL 缓存 (BUG-13)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -118,16 +119,16 @@ class RemoteMonitorPage(QWidget):
         self.label_url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         url_layout.addWidget(self.label_url, 1)
         
-        btn_copy = QPushButton("复制链接")
-        btn_copy.setStyleSheet(f"""
+        self.btn_copy = QPushButton("复制链接")
+        self.btn_copy.setStyleSheet(f"""
             QPushButton {{
                 background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
                 border-radius: 6px; padding: 4px 10px; font-size: 11px; color: {CLR_TEXT_MAIN};
             }}
             QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
         """)
-        btn_copy.clicked.connect(self._copy_link)
-        url_layout.addWidget(btn_copy)
+        self.btn_copy.clicked.connect(self._copy_link)
+        url_layout.addWidget(self.btn_copy)
         
         qr_container_layout.addWidget(self.url_widget)
         qr_layout.addWidget(self.qrcode_widget)
@@ -225,6 +226,7 @@ class RemoteMonitorPage(QWidget):
         
         # 访问令牌以 URL fragment 携带（不进 query/日志）, 扫码即自动登录
         url = f"http://{ip}:{self._port}/#tk={self._token}"
+        self._current_url = url
         self.label_url.setText(url)
         self._update_qrcode(url)
         self.qrcode_widget.show()
@@ -234,6 +236,7 @@ class RemoteMonitorPage(QWidget):
 
     def _update_ui_stopped(self):
         """更新UI为停止状态"""
+        self._current_url = ""
         self.qrcode_widget.hide()
         self.url_widget.hide()
         self.hint_label.show()
@@ -274,14 +277,16 @@ class RemoteMonitorPage(QWidget):
             self.qrcode_label.setStyleSheet("font-size: 10px; color: #666; word-break: break-all;")
 
     def _copy_link(self):
-        """复制链接到剪贴板"""
+        """复制链接到剪贴板 (BUG-13: 防 URL 篡改，保持标签文字不变)"""
+        if not self._current_url:
+            return
         from PyQt6.QtWidgets import QApplication
-        url = self.label_url.text()
-        if url and url != "—":
-            clipboard = QApplication.clipboard()
-            clipboard.setText(url)
-            # 短暂显示复制成功提示
-            original_text = self.label_url.text()
-            self.label_url.setText("已复制！")
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(1500, lambda: self.label_url.setText(original_text))
+        from PyQt6.QtCore import QTimer
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self._current_url)
+        self.btn_copy.setText("已复制")
+        self.btn_copy.setEnabled(False)
+        QTimer.singleShot(1500, lambda: (
+            self.btn_copy.setText("复制链接"),
+            self.btn_copy.setEnabled(True)
+        ))

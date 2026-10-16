@@ -55,9 +55,9 @@ class StopConditionsPage(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea { background: transparent; }")
 
-        container = QWidget()
-        container.setStyleSheet("background: transparent;")
-        layout = QVBoxLayout(container)
+        self.container = QWidget()
+        self.container.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self.container)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(10)
 
@@ -278,8 +278,10 @@ class StopConditionsPage(QWidget):
         # 初始禁用状态由 MainWindow._setup_ui 在快捷引用建立后统一调用
         # self._main_win._set_stop_controls_enabled(False)
 
-        scroll.setWidget(container)
+        scroll.setWidget(self.container)
         page_layout.addWidget(scroll, 1)
 
-        # self._stack.addWidget(page)  # 由 MainWindow._setup_ui 负责 addWidget
+    def set_controls_enabled(self, enabled: bool) -> None:
+        """运行期控件锁定与解锁 (BUG-09). 仅禁用容器内输入项，外部 QScrollArea 保持 enabled，滚动条/滚轮依然可用."""
+        self.container.setEnabled(enabled)
 

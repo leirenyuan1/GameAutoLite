@@ -728,6 +728,22 @@ class CollapsibleTaskCard(QFrame):
         self.btn_up.setDisabled(is_first)
         self.btn_down.setDisabled(is_last)
 
+    def set_running_locked(self, locked: bool) -> None:
+        """运行期控件锁定与解锁 (BUG-09, R3, P2-5)."""
+        self.btn_capture.setEnabled(not locked)
+        self.btn_upload.setEnabled(not locked)
+        # 模式守卫 P2-5：解锁时仅在未勾选“跟随识别图”时才启用 btn_region，杜绝状态冲突
+        self.btn_region.setEnabled(not locked and not self._click_on_match)
+        self.btn_delete.setEnabled(not locked)
+        self.name_edit.setEnabled(not locked)
+        self.combo_click_mode.setEnabled(not locked)
+        # 锁定区域模式复选框（R3）：防运行期勾选反向触发 btn_region 启用引发遮罩与引擎点击冲突
+        self.chk_click_on_match.setEnabled(not locked)
+        self.chk_multi_region.setEnabled(not locked)
+        # 运行期一并锁定上移/下移，防止运行中挪动卡片引发删除锁泄漏与布局竞态
+        self.btn_up.setEnabled(not locked)
+        self.btn_down.setEnabled(not locked)
+
     # ---- 名称校验 ----
 
     def _validate_name(self) -> None:
