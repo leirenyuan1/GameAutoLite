@@ -53,6 +53,7 @@ class CollapsibleTaskCard(QFrame):
         self._expanded = True
         self._is_deleting = False
         self._name_has_error = False  # 标记当前卡片名称是否有校验错误
+        self._last_valid_name: str = ""  # 任务改名基线记录 (DASH-04)
         self._fold_anim: QPropertyAnimation | None = None
         self._setup_ui()
 
@@ -690,28 +691,30 @@ class CollapsibleTaskCard(QFrame):
             # Esc 取消时保留已有区域，与多选模式行为对齐（task_card.py 多选分支注释）
 
     def _validate_delay(self) -> None:
+        if not self.edit_delay_min.text().strip():
+            self.edit_delay_min.setText("200")
+        if not self.edit_delay_max.text().strip():
+            self.edit_delay_max.setText("500")
         try:
             mn = int(self.edit_delay_min.text())
             mx = int(self.edit_delay_max.text())
             if mn > mx:
                 self.edit_delay_max.setText(str(mn + 100))
         except ValueError:
-            if not self.edit_delay_min.text().strip():
-                self.edit_delay_min.setText("200")
-            if not self.edit_delay_max.text().strip():
-                self.edit_delay_max.setText("500")
+            pass
 
     def _validate_cooldown(self) -> None:
+        if not self.edit_cooldown_min.text().strip():
+            self.edit_cooldown_min.setText("0")
+        if not self.edit_cooldown_max.text().strip():
+            self.edit_cooldown_max.setText("0")
         try:
             mn = int(self.edit_cooldown_min.text())
             mx = int(self.edit_cooldown_max.text())
             if mn > mx:
                 self.edit_cooldown_max.setText(str(mn))
         except ValueError:
-            if not self.edit_cooldown_min.text().strip():
-                self.edit_cooldown_min.setText("0")
-            if not self.edit_cooldown_max.text().strip():
-                self.edit_cooldown_max.setText("0")
+            pass
 
     # ---- 图片路径有效性检查 ----
 
@@ -762,7 +765,12 @@ class CollapsibleTaskCard(QFrame):
         if not text:
             # 空名称 → 自动生成唯一名称
             if main_win:
-                self.name_edit.setText(main_win._next_task_name())
+                new_name = main_win._next_task_name()
+                if self._last_valid_name and self._last_valid_name != new_name:
+                    if hasattr(main_win, "on_task_renamed"):
+                        main_win.on_task_renamed(self._last_valid_name, new_name)
+                self.name_edit.setText(new_name)
+                self._last_valid_name = new_name
             self._name_has_error = False
             self._set_name_normal_style()
             self._clear_sibling_errors(main_win)
@@ -785,8 +793,12 @@ class CollapsibleTaskCard(QFrame):
                     c._set_name_error_style()
                 return
 
-            # 校验通过 → 恢复自己和同名兄弟的正常样式
+            # 校验通过 → 先迁移自身旧名数据腾出键位，再恢复同名兄弟卡片并迁移其数据 (BUG-04 细节闭环)
             self._name_has_error = False
+            if self._last_valid_name and self._last_valid_name != my_name:
+                if hasattr(main_win, "on_task_renamed"):
+                    main_win.on_task_renamed(self._last_valid_name, my_name)
+            self._last_valid_name = my_name
             self._clear_sibling_errors(main_win)
 
         self._set_name_normal_style()
@@ -811,6 +823,11 @@ class CollapsibleTaskCard(QFrame):
                 if not has_other_dup:
                     c._name_has_error = False
                     c._set_name_normal_style()
+                    # 补齐失步保护：当兄弟卡片解除重名错误恢复合法时，同步更新其有效名并迁移数据 (BUG-04)
+                    if c._last_valid_name and c._last_valid_name != other_name:
+                        if hasattr(main_win, "on_task_renamed"):
+                            main_win.on_task_renamed(c._last_valid_name, other_name)
+                        c._last_valid_name = other_name
 
     def _find_main_window(self):
         """向上遍历 parent 链找到 MainWindow."""
@@ -866,6 +883,7 @@ class CollapsibleTaskCard(QFrame):
 
     def from_dict(self, data: dict) -> None:
         self.name_edit.setText((data.get("name") or "").strip())  # or "" 防 None
+        self._last_valid_name = self.name_edit.text().strip()
         self._image_path = data.get("image_path") or None
         if self._image_path:
             pixmap = QPixmap(self._image_path)

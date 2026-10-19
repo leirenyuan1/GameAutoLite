@@ -21,7 +21,7 @@ class NavItem(QWidget):
         self.setObjectName("nav_item")
         # QWidget 子类默认不绘制 QSS 背景，需显式开启
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedHeight(44)
+        self.setFixedHeight(40)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         layout = QHBoxLayout(self)

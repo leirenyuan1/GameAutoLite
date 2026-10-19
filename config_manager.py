@@ -127,16 +127,12 @@ def parse_scheme_file(path: str) -> tuple[list[dict], dict | None, str, str]:
 
 def restore_task_image(item: dict) -> dict:
     """
-    检查单条任务配置里的图片路径是否有效，若丢失则尝试：
-      1. 原路径有效直接使用；
-      2. base64 解码还原并以 {stem}_{hash8}.png 存储（消除同名老图错绑 BUG-08）；
+    检查单条任务配置里的图片路径是否有效，优先使用方案包内嵌数据：
+      1. base64 解码还原并以 {stem}_{hash8}.png 存储（消除同名老图错绑 BUG-08）；
+      2. 原路径有效直接使用（回退兼容）；
       3. screenshots/ 目录下寻找同名文件兜底。
     返回修改后的 item（原地修改并返回）。
     """
-    img_path = item.get("image_path", "")
-    if img_path and os.path.exists(img_path):
-        return item  # 原图还在，直接用
-
     img_filename = item.get("image_filename", "")
     img_data = item.get("image_data")
 
@@ -159,7 +155,12 @@ def restore_task_image(item: dict) -> dict:
         except Exception as e:
             logger.error(f"从方案还原图片失败: {e}")
 
-    # 若无 base64 或解析失败，回退尝试同名文件
+    # 若无 base64 或解析失败，回退尝试原本地路径
+    img_path = item.get("image_path", "")
+    if img_path and os.path.exists(img_path):
+        return item
+
+    # 最后尝试同名文件兜底
     if img_filename:
         restored_path = os.path.join(SCREENSHOTS_DIR, os.path.basename(img_filename))
         if os.path.exists(restored_path):

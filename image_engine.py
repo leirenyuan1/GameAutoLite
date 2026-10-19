@@ -94,3 +94,31 @@ def find_template(
     except Exception as e:
         logger.error(f"模板匹配过程出错: {e}")
         return None
+
+
+def find_template_with_score(
+    screenshot: np.ndarray,
+    template: np.ndarray,
+    threshold: float = 0.8,
+) -> tuple[int, int, int, int, float] | None:
+    """
+    使用 cv2.matchTemplate + TM_CCOEFF_NORMED 进行模板匹配.
+    若最高匹配分数 >= threshold, 返回匹配区域及匹配度 (x, y, w, h, float(score)).
+    否则返回 None.
+    匹配过程出错时返回 None 并记录日志, 不崩溃.
+    """
+    if template is None or screenshot is None:
+        return None
+    if template.shape[0] > screenshot.shape[0] or template.shape[1] > screenshot.shape[1]:
+        return None
+    try:
+        result = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if max_val >= threshold:
+            h, w = template.shape[:2]
+            return (max_loc[0], max_loc[1], w, h, float(max_val))
+        return None
+    except Exception as e:
+        logger.error(f"模板匹配过程出错: {e}")
+        return None
+

@@ -128,6 +128,28 @@ _BODY: dict[str, str] = {
         '<path d="M7 21.5v-4.4a2 2 0 0 1 .6-1.4L12 11.3l4.4 4.4a2 2 0 0 1 .6 1.4v4.4"/>'
     ),
     "check": '<circle cx="12" cy="12" r="9"/>' '<path d="m7.8 12.3 3 3 5.4-5.6"/>',
+    # ————— 数据看板新增 —————
+    "bar-chart": (
+        '<path d="M12 20V10"/>'
+        '<path d="M18 20V4"/>'
+        '<path d="M6 20v-4"/>'
+    ),
+    "activity": (
+        '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'
+    ),
+    "refresh-cw": (
+        '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>'
+        '<path d="M21 3v5h-5"/>'
+        '<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>'
+        '<path d="M8 16H3v5"/>'
+    ),
+    "copy": (
+        '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>'
+        '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
+    ),
+    "maximize-2": (
+        '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>'
+    ),
 }
 
 _ATTRS = (

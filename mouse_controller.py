@@ -10,6 +10,7 @@
   3. 拆分为 mouseDown + 随机停留 + mouseUp 的真实点击
 """
 
+import logging
 import random
 import time
 import math
@@ -18,19 +19,28 @@ import win32api
 import win32con
 
 
-def _real_click(speed: float = 1.0) -> None:
+logger = logging.getLogger(__name__)
+
+
+def _real_click(speed: float = 1.0) -> bool:
     """
     执行真实按压点击.
     严禁使用任何封装好的 click() 函数, 必须拆分为:
       1. mouse_event LEFTDOWN   -- 按下
       2. sleep(50~150ms)        -- 随机停留
       3. mouse_event LEFTUP     -- 松开（try...finally 保证 100% 触发）
+    返回 True 表示点击成功，False 表示底层 API 失败。
     """
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
     try:
-        time.sleep(random.uniform(0.05, 0.15) / speed)
-    finally:
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
+        try:
+            time.sleep(random.uniform(0.05, 0.15) / speed)
+        finally:
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+        return True
+    except Exception as e:
+        logger.error(f"鼠标点击事件失败: {e}")
+        return False
 
 
 def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
@@ -39,7 +49,14 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
     包含: 随机控制点偏移 + 物理惯性速度曲线 + 路径抖动 + 动态耗时.
     支持通过 stop_event 在移动过程中毫秒级打断并返回 False.
     """
-    sx, sy = win32api.GetCursorPos()
+    if stop_event and stop_event.is_set():
+        return False
+
+    try:
+        sx, sy = win32api.GetCursorPos()
+    except Exception as e:
+        logger.error(f"获取鼠标位置失败: {e}")
+        return False
 
     # 计算起点到终点的像素距离
     dist = math.hypot(tx - sx, ty - sy)
@@ -127,23 +144,29 @@ def click_in_region(
     move_speed: float = 1.0,
     click_speed: float = 1.0,
     stop_event=None,
-) -> bool:
+) -> list[tuple[int, int, float, float]]:
     """
     在矩形区域内随机取点, 贝塞尔曲线移动过去, 执行真实按压点击.
     调用方只需传入区域坐标, 内部自动完成全部步骤.
-    若移动途中被 stop_event 打断, 则立即返回 False 并不执行真实点击.
+    若移动途中被 stop_event 打断, 则立即返回已记录的 clicks 并不执行真实点击.
+    返回 list[tuple[int, int, float, float]], 元素为 (tx, ty, norm_x, norm_y).
     """
+    clicks: list[tuple[int, int, float, float]] = []
     # 第一步: 在区域内均匀随机取点(禁止取中心点)
     tx = random.randint(x, x + w)
     ty = random.randint(y, y + h)
 
     # 第二步: 贝塞尔曲线移动到目标点
     if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
-        return False
+        return clicks
 
     # 第三步: 真实按压点击
-    _real_click(click_speed)
-    return True
+    if not _real_click(click_speed):
+        return clicks
+    norm_x = (tx - x) / max(1, w)
+    norm_y = (ty - y) / max(1, h)
+    clicks.append((tx, ty, float(norm_x), float(norm_y)))
+    return clicks
 
 
 def click_in_regions(
@@ -151,22 +174,28 @@ def click_in_regions(
     move_speed: float = 1.0,
     click_speed: float = 1.0,
     stop_event=None,
-) -> bool:
+) -> list[tuple[int, int, float, float]]:
     """
     从多个区域中按面积加权随机选一个, 再在其中随机取点点击.
     大区域被选中的概率更高, 行为更自然.
-    若移动途中被 stop_event 打断, 则立即返回 False.
+    若移动途中被 stop_event 打断, 则立即返回已记录的 clicks.
+    返回 list[tuple[int, int, float, float]], 元素为 (tx, ty, norm_x, norm_y).
     """
+    clicks: list[tuple[int, int, float, float]] = []
     if not regions:
-        return False
+        return clicks
     weights = [w * h for _, _, w, h in regions]
     x, y, w, h = random.choices(regions, weights=weights, k=1)[0]
     tx = random.randint(x, x + w)
     ty = random.randint(y, y + h)
     if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
-        return False
-    _real_click(click_speed)
-    return True
+        return clicks
+    if not _real_click(click_speed):
+        return clicks
+    norm_x = (tx - x) / max(1, w)
+    norm_y = (ty - y) / max(1, h)
+    clicks.append((tx, ty, float(norm_x), float(norm_y)))
+    return clicks
 
 
 def click_in_region_multi(
@@ -177,17 +206,23 @@ def click_in_region_multi(
     stop_event=None,
     move_speed: float = 1.0,
     click_speed: float = 1.0,
-) -> None:
+) -> list[tuple[int, int, float, float]]:
     """
     在区域内多次点击, 用于双击/连击.
     第一次: 随机取点 + 贝塞尔移动 + 真实点击(无偏移).
     后续每次: 随机间隔 + 随机偏移(钳制在区域内) + 贝塞尔移动 + 真实点击.
+    返回已实际完成点击的落点列表 clicks.
     """
+    clicks: list[tuple[int, int, float, float]] = []
     tx = random.randint(x, x + w)
     ty = random.randint(y, y + h)
     if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
-        return
-    _real_click(click_speed)
+        return clicks
+    if not _real_click(click_speed):
+        return clicks
+    norm_x = (tx - x) / max(1, w)
+    norm_y = (ty - y) / max(1, h)
+    clicks.append((tx, ty, float(norm_x), float(norm_y)))
 
     for i in range(1, count):
         if stop_event and stop_event.is_set():
@@ -197,7 +232,7 @@ def click_in_region_multi(
         end = time.time() + interval
         while time.time() < end:
             if stop_event and stop_event.is_set():
-                return
+                return clicks
             time.sleep(0.05)
 
         if stop_event and stop_event.is_set():
@@ -209,5 +244,11 @@ def click_in_region_multi(
         ty = max(y, min(y + h, ty + dy))
 
         if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
-            return
-        _real_click(click_speed)
+            return clicks
+        if not _real_click(click_speed):
+            return clicks
+        norm_x = (tx - x) / max(1, w)
+        norm_y = (ty - y) / max(1, h)
+        clicks.append((tx, ty, float(norm_x), float(norm_y)))
+
+    return clicks

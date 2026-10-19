@@ -135,6 +135,10 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
             <span class="status-icon" id="icon3"></span>
             <span class="status-text" id="line3">—</span>
         </div>
+        <div class="status-summary" style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #E8F4FD; display: flex; justify-content: space-between; font-size: 12px; color: #7A9AB8;">
+            <span>运行时长: <strong id="run-duration" style="color: #2196F3;">00:00:00</strong></span>
+            <span>匹配触发: <strong id="total-matches" style="color: #43A047;">0</strong> 次</span>
+        </div>
     </div>
 
     <div class="card">
@@ -194,6 +198,9 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('line2').textContent = data.line2;
             setStatusIcon(document.getElementById('icon3'), data.icon3);
             document.getElementById('line3').textContent = data.line3;
+
+            if (data.run_duration) document.getElementById('run-duration').textContent = data.run_duration;
+            if (data.total_matches !== undefined) document.getElementById('total-matches').textContent = data.total_matches;
 
             const btn = document.getElementById('toggle-btn');
             if (data.is_running) {

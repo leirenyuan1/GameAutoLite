@@ -21,6 +21,8 @@ class EngineThread(QThread):
     status_update = pyqtSignal(str)
     stop_condition_met = pyqtSignal(str)
     # ↑ 停止条件触发，参数为原因描述（空字符串表示正常停止）
+    stats_updated = pyqtSignal(dict)    # 增量遥测包
+    task_triggered = pyqtSignal(dict)   # 单次任务触发包
 
     def __init__(self, task_configs: list[dict], scan_interval: int = 200,
                  move_speed: float = 1.0, click_speed: float = 1.0,
@@ -34,6 +36,7 @@ class EngineThread(QThread):
         self._stop_event = threading.Event()
         self._template_cache: dict[str, object] = {}
         self._last_status_text: str = ""
+        self.final_stats_delta: dict = {}
 
     def _emit_status(self, text: str) -> None:
         """相同状态文本不重复 emit 信号，防止高频重绘 (BUG-10)."""
@@ -47,6 +50,12 @@ class EngineThread(QThread):
         task_match_counts: dict[str, int] = {}
         last_match_time = time.time()
         stop_image_template = None
+
+        # 遥测增量计数器与节流时间戳
+        cycle_scan_delta = 0
+        cycle_scan_cost_ms = 0.0
+        last_scan_cost_ms = 0.0
+        last_stats_emit_time = time.time()
 
         sc = self._stop_conditions
         sc_enabled = sc.get("enabled", False)
@@ -81,7 +90,9 @@ class EngineThread(QThread):
                             f"{cond4['minutes']} 分钟无匹配，自动停止"
                         )
                         break
-            # 1. 截全屏
+
+            # 1. 截全屏 (开始记录纯扫描耗时起点)
+            t_scan_start = time.perf_counter()
             try:
                 screenshot = image_engine.take_screenshot()
             except Exception as e:
@@ -94,6 +105,10 @@ class EngineThread(QThread):
             if sc_enabled and cond3.get("enabled") and stop_image_template is not None:
                 threshold = cond3.get("threshold", 90) / 100.0
                 if image_engine.find_template(screenshot, stop_image_template, threshold):
+                    cost_ms = (time.perf_counter() - t_scan_start) * 1000.0
+                    cycle_scan_delta += 1
+                    cycle_scan_cost_ms += cost_ms
+                    last_scan_cost_ms = cost_ms
                     self.stop_condition_met.emit("识别到指定停止图片，自动停止")
                     break
 
@@ -115,10 +130,30 @@ class EngineThread(QThread):
                 if template is None:
                     continue
 
-                result = image_engine.find_template(
+                result = image_engine.find_template_with_score(
                     screenshot, template, cfg["threshold"] / 100.0
                 )
                 if result is not None:
+                    rx, ry, rw, rh = result[:4]
+                    score = result[4]
+
+                    # 纯扫描耗时统计终点：严格在延迟/移动/点击前采样
+                    cost_ms = (time.perf_counter() - t_scan_start) * 1000.0
+                    cycle_scan_delta += 1
+                    cycle_scan_cost_ms += cost_ms
+                    last_scan_cost_ms = cost_ms
+
+                    if time.time() - last_stats_emit_time >= 0.5 and cycle_scan_delta > 0:
+                        self.stats_updated.emit({
+                            "scan_delta": cycle_scan_delta,
+                            "scan_cost_delta_ms": cycle_scan_cost_ms,
+                            "last_cost_ms": last_scan_cost_ms,
+                            "elapsed_sec": time.time() - start_time,
+                        })
+                        cycle_scan_delta = 0
+                        cycle_scan_cost_ms = 0.0
+                        last_stats_emit_time = time.time()
+
                     # 3. 匹配成功 → 随机延迟
                     _dmin, _dmax = cfg["delay_min"], cfg["delay_max"]
                     delay_ms = random.randint(_dmin, max(_dmin, _dmax))
@@ -129,7 +164,13 @@ class EngineThread(QThread):
                     if self._stop_event.is_set():
                         break
 
-                    # 4. 执行点击
+                    # 预先计算冷却时间
+                    _cmin = cfg.get("cooldown_min", 0)
+                    _cmax = cfg.get("cooldown_max", 0)
+                    cooldown_ms = random.randint(_cmin, max(_cmin, _cmax))
+
+                    # 4. 执行点击并采集物理落点列表
+                    click_results: list[tuple[int, int, float, float]] = []
                     try:
                         click_count = cfg.get("click_count", 1)
                         if cfg.get("multi_region", False):
@@ -142,54 +183,77 @@ class EngineThread(QThread):
                                     self._sleep_interruptible(_interval)
                                     if self._stop_event.is_set():
                                         break
-                                mouse_controller.click_in_regions(
+                                c = mouse_controller.click_in_regions(
                                     regions,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
                                     stop_event=self._stop_event,
                                 )
+                                if c:
+                                    click_results.extend(c)
                         elif cfg.get("click_on_match", False):
-                            rx, ry, rw, rh = result
                             if click_count <= 1:
-                                mouse_controller.click_in_region(
+                                c = mouse_controller.click_in_region(
                                     rx, ry, rw, rh,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
                                     stop_event=self._stop_event,
                                 )
+                                if c:
+                                    click_results.extend(c)
                             else:
-                                mouse_controller.click_in_region_multi(
+                                c = mouse_controller.click_in_region_multi(
                                     rx, ry, rw, rh, count=click_count,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
                                     stop_event=self._stop_event,
                                 )
+                                if c:
+                                    click_results.extend(c)
                         else:
-                            rx, ry, rw, rh = cfg["region"]
+                            rx_reg, ry_reg, rw_reg, rh_reg = cfg["region"]
                             if click_count <= 1:
-                                mouse_controller.click_in_region(
-                                    rx, ry, rw, rh,
+                                c = mouse_controller.click_in_region(
+                                    rx_reg, ry_reg, rw_reg, rh_reg,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
                                     stop_event=self._stop_event,
                                 )
+                                if c:
+                                    click_results.extend(c)
                             else:
-                                mouse_controller.click_in_region_multi(
-                                    rx, ry, rw, rh, count=click_count,
+                                c = mouse_controller.click_in_region_multi(
+                                    rx_reg, ry_reg, rw_reg, rh_reg, count=click_count,
                                     move_speed=self._move_speed,
                                     click_speed=self._click_speed,
                                     stop_event=self._stop_event,
                                 )
+                                if c:
+                                    click_results.extend(c)
                     except Exception as e:
                         logger.error(f"点击失败: {e}")
+
+                    # 移动或点击途中若被打断，立即跳出循环，绝不误发射触发包
+                    if self._stop_event.is_set():
+                        break
+
+                    # 若未产生任何有效点击（如中途打断或底层失败），不发射触发记录
+                    if not click_results:
+                        continue
+
+                    # 紧贴点击完成之后立即发射单次任务触发包
+                    self.task_triggered.emit({
+                        "name": cfg["name"],
+                        "score": round(score * 100, 1),
+                        "clicks": click_results,
+                        "delay_ms": delay_ms,
+                        "cooldown_ms": cooldown_ms,
+                    })
 
                     if self._stop_event.is_set():
                         break
 
                     # 5. 点击后冷却
-                    _cmin = cfg.get("cooldown_min", 0)
-                    _cmax = cfg.get("cooldown_max", 0)
-                    cooldown_ms = random.randint(_cmin, max(_cmin, _cmax))
                     self._emit_status(
                         f"点击完成, 冷却 {cooldown_ms}ms"
                     )
@@ -220,9 +284,37 @@ class EngineThread(QThread):
                     break
 
             if not matched and not self._stop_event.is_set():
+                cost_ms = (time.perf_counter() - t_scan_start) * 1000.0
+                cycle_scan_delta += 1
+                cycle_scan_cost_ms += cost_ms
+                last_scan_cost_ms = cost_ms
+
+                if time.time() - last_stats_emit_time >= 0.5 and cycle_scan_delta > 0:
+                    self.stats_updated.emit({
+                        "scan_delta": cycle_scan_delta,
+                        "scan_cost_delta_ms": cycle_scan_cost_ms,
+                        "last_cost_ms": last_scan_cost_ms,
+                        "elapsed_sec": time.time() - start_time,
+                    })
+                    cycle_scan_delta = 0
+                    cycle_scan_cost_ms = 0.0
+                    last_stats_emit_time = time.time()
+
                 self._emit_status("运行中...")
                 if self._scan_interval > 0:
                     self._sleep_interruptible(self._scan_interval / 1000.0)
+
+        # 循环退出后若有余量，缓存到实例属性供主线程原子结算，无需重复 emit 避免多线程时序下重复累加
+        if cycle_scan_delta > 0:
+            delta_pkt = {
+                "scan_delta": cycle_scan_delta,
+                "scan_cost_delta_ms": cycle_scan_cost_ms,
+                "last_cost_ms": last_scan_cost_ms,
+                "elapsed_sec": time.time() - start_time,
+            }
+            self.final_stats_delta = delta_pkt
+            cycle_scan_delta = 0
+            cycle_scan_cost_ms = 0.0
 
         self._emit_status("已停止")
 
@@ -232,3 +324,4 @@ class EngineThread(QThread):
 
     def stop(self) -> None:
         self._stop_event.set()
+

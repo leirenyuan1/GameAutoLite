@@ -79,6 +79,8 @@ class MainWindow(QMainWindow):
             "icon3": {"key": "timer", "color": CLR_TEXT_SUB}, "line3": "—",
             "is_running": False,
             "stop_reason": "",
+            "run_duration": "00:00:00",
+            "total_matches": 0,
         }
 
         # 状态图标数据源（远程缓存协议使用; 初始与 sidebar 三行一致）
@@ -138,10 +140,15 @@ class MainWindow(QMainWindow):
         from pages.remote_monitor_page import RemoteMonitorPage
         self._remote_monitor_page = RemoteMonitorPage(self)
 
+        # ========== 页面 4: 数据看板 ==========
+        from pages.dashboard_page import DashboardPage
+        self._dashboard_page = DashboardPage(self)
+
         self._stack.addWidget(self._task_list_page)          # index 0
         self._stack.addWidget(self._stop_conditions_page)    # index 1
         self._stack.addWidget(self._settings_page)           # index 2
         self._stack.addWidget(self._remote_monitor_page)     # index 3
+        self._stack.addWidget(self._dashboard_page)          # index 4
 
         # ======== 快捷引用（过渡期） ========
         # 任务列表页
@@ -402,25 +409,34 @@ class MainWindow(QMainWindow):
 
     def _on_stop_condition_met(self, reason: str) -> None:
         """停止条件触发 (BUG-06: 消除桌面中央阻塞弹窗，状态持久化至侧边栏与手机端)."""
+        if self._manual_stop:
+            return
         self._stop_by_condition = True
 
-        if not self._engine or not self._engine.isRunning():
-            if not self._manual_stop:
-                self._apply_condition_stop_ui(reason)
-            return
+        if self._engine:
+            for sig in (
+                self._engine.status_update,
+                self._engine.finished,
+                self._engine.stop_condition_met,
+                getattr(self._engine, "stats_updated", None),
+                getattr(self._engine, "task_triggered", None),
+            ):
+                if sig:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+            self._engine.stop()
+            if self._engine.isRunning() and not self._engine.wait(3000):
+                # 兜底：线程未在 3 秒内退出（仅当未来新增更长的不可打断操作才会走到这里）
+                logger.error("引擎线程未在 3 秒内退出，进入等待退出状态")
+                self._engine_dying = True
+                self._engine.finished.connect(self._on_dying_engine_finished)  # 线程真正退出后再清理
 
-        try:
-            self._engine.status_update.disconnect(self._on_status_update)
-            self._engine.finished.disconnect(self._on_engine_finished)
-            self._engine.stop_condition_met.disconnect(self._on_stop_condition_met)
-        except Exception:
-            pass
-        self._engine.stop()
-        if not self._engine.wait(3000):
-            # 兜底：线程未在 3 秒内退出（仅当未来新增更长的不可打断操作才会走到这里）
-            logger.error("引擎线程未在 3 秒内退出，进入等待退出状态")
-            self._engine_dying = True
-            self._engine.finished.connect(self._on_dying_engine_finished)  # 线程真正退出后再清理
+            # 补齐最后一包遥测余量（无论线程此时是否已自然结束均安全读取，杜绝跳过）
+            if hasattr(self, "_dashboard_page") and getattr(self._engine, "final_stats_delta", None):
+                self._dashboard_page.on_stats_updated(self._engine.final_stats_delta)
+                self._engine.final_stats_delta = {}
 
         self._apply_condition_stop_ui(reason)
 
@@ -514,6 +530,8 @@ class MainWindow(QMainWindow):
         if self._floating_widget and self._floating_widget.isVisible():
             self._floating_widget.sync_from_sidebar(self.sidebar)
         self._stop_reason = reason
+        if hasattr(self, "_dashboard_page"):
+            self._dashboard_page.on_engine_stopped()
         self._update_remote_status_cache()
         self._set_engine_controls_locked(False)
 
@@ -521,6 +539,11 @@ class MainWindow(QMainWindow):
         """更新远程监控状态缓存（线程安全） (BUG-06)"""
         with self._remote_status_lock:
             sb = self.sidebar
+            dur_str = "00:00:00"
+            matches_cnt = 0
+            if hasattr(self, "_dashboard_page"):
+                dur_str = self._dashboard_page.get_current_duration_str()
+                matches_cnt = self._dashboard_page.get_current_match_count()
             self._remote_status_cache = {
                 "icon1": self._status_icons["icon1"],
                 "line1": sb.status_line1.text(),
@@ -530,7 +553,16 @@ class MainWindow(QMainWindow):
                 "line3": sb.status_line3.text(),
                 "is_running": sb.is_running(),
                 "stop_reason": self._stop_reason,
+                "run_duration": dur_str,
+                "total_matches": matches_cnt,
             }
+
+    @pyqtSlot(dict)
+    def _on_engine_stats_updated(self, data: dict) -> None:
+        try:
+            self._update_remote_status_cache()
+        except Exception as e:
+            logger.error(f"遥测触发更新缓存异常: {e}")
 
     # 设置卡片计数器，用于生成唯一的 objectName
     _settings_card_counter = 0
@@ -734,6 +766,10 @@ class MainWindow(QMainWindow):
         # 启动前同步所有设置到 _global_settings
         self._sync_settings_to_global()
 
+        # 启动前预先触发表单失焦校验，确保未回车或未失焦的改名完整提交
+        for card in self._task_cards:
+            card._validate_name()
+
         # 校验名称：检查是否有重复或空名称
         name_count: dict[str, list] = {}
         for card in self._task_cards:
@@ -823,6 +859,11 @@ class MainWindow(QMainWindow):
         self._engine.status_update.connect(self._on_status_update)
         self._engine.finished.connect(self._on_engine_finished)
         self._engine.stop_condition_met.connect(self._on_stop_condition_met)
+        if hasattr(self, "_dashboard_page"):
+            self._engine.stats_updated.connect(self._dashboard_page.on_stats_updated)
+            self._engine.task_triggered.connect(self._dashboard_page.on_task_triggered)
+            self._engine.stats_updated.connect(self._on_engine_stats_updated)
+            self._dashboard_page.on_engine_started()
         self._engine.start()
 
         self.sidebar.set_engine_running(True)
@@ -834,18 +875,30 @@ class MainWindow(QMainWindow):
     def _stop_engine(self) -> None:
         self._manual_stop = True
         if self._engine:
-            try:
-                self._engine.status_update.disconnect(self._on_status_update)
-                self._engine.finished.disconnect(self._on_engine_finished)
-                self._engine.stop_condition_met.disconnect(self._on_stop_condition_met)
-            except Exception:
-                pass
+            for sig in (
+                self._engine.status_update,
+                self._engine.finished,
+                self._engine.stop_condition_met,
+                getattr(self._engine, "stats_updated", None),
+                getattr(self._engine, "task_triggered", None),
+            ):
+                if sig:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
             self._engine.stop()
             if not self._engine.wait(3000):
                 # 兜底：线程未在 3 秒内退出（仅当未来新增更长的不可打断操作才会走到这里）
                 logger.error("引擎线程未在 3 秒内退出，进入等待退出状态")
                 self._engine_dying = True
                 self._engine.finished.connect(self._on_dying_engine_finished)  # 线程真正退出后再清理
+
+            # 补齐最后一包遥测余量（BUG-01 修复：防停止时最后一包扫描数据丢弃）
+            if hasattr(self, "_dashboard_page") and getattr(self._engine, "final_stats_delta", None):
+                self._dashboard_page.on_stats_updated(self._engine.final_stats_delta)
+                self._engine.final_stats_delta = {}
+
         self._on_engine_finished()  # 幂等，超时/正常都执行，保证 UI 不卡在"运行中"
 
     def _on_status_update(self, text: str) -> None:
@@ -930,6 +983,8 @@ class MainWindow(QMainWindow):
             self._floating_widget.sync_from_sidebar(sb)
 
         self._restore_window_if_auto_minimized()
+        if hasattr(self, "_dashboard_page"):
+            self._dashboard_page.on_engine_stopped()
         self._update_remote_status_cache()  # 插入点C
         self._set_engine_controls_locked(False)
 
@@ -962,7 +1017,9 @@ class MainWindow(QMainWindow):
             card.set_collapsed(True)  # 有内容的卡片默认折叠
         else:
             card.set_collapsed(False)  # 新建空卡片默认展开
-            card.name_edit.setText(self._next_task_name())  # 自动命名
+            name = self._next_task_name()
+            card.name_edit.setText(name)  # 自动命名
+            card._last_valid_name = name
         card.removed.connect(self._remove_task)
         card.moved_up.connect(self._move_task_up)
         card.moved_down.connect(self._move_task_down)
@@ -989,6 +1046,10 @@ class MainWindow(QMainWindow):
         self._task_cards.remove(card)
         card._is_deleting = True
         self._refresh_move_buttons()
+        # 删除卡片后，触发剩余报错卡片重新校验，若重名冲突已解除则立即消除红框
+        for c in self._task_cards:
+            if getattr(c, "_name_has_error", False):
+                c._validate_name()
 
         # 阶段1: 透明度动画 1.0 → 0.0
         # 动态创建 opacity effect 替换 shadow（QGraphicsEffect 互斥）
@@ -1153,6 +1214,30 @@ class MainWindow(QMainWindow):
         self._global_settings["floating_opacity"] = self.slider_opacity.value()
         self._global_settings["floating_disabled"] = self.chk_floating_disabled.isChecked()
         self._global_settings["stop_conditions"] = self._collect_stop_conditions()
+        if hasattr(self, "_dashboard_page"):
+            exported = self._dashboard_page.export_stats_history()
+            if exported:
+                self._global_settings["stats_history"] = exported
+
+    def on_task_renamed(self, old_name: str, new_name: str) -> None:
+        """接收任务卡片改名事件，安全转发至看板进行数据合并迁移，并同步停止条件下拉框."""
+        try:
+            if hasattr(self, "_dashboard_page"):
+                self._dashboard_page.on_task_renamed(old_name, new_name)
+            # 同步更新停止条件一的目标任务名称，避免用户改名后条件一失效 (P3-6)
+            if hasattr(self, "combo_stop_task"):
+                cur_target = self.combo_stop_task.currentText().strip()
+                if cur_target == old_name:
+                    old_idx = self.combo_stop_task.findText(old_name)
+                    if old_idx >= 0:
+                        self.combo_stop_task.setItemText(old_idx, new_name)
+                        self.combo_stop_task.setCurrentIndex(old_idx)
+                    else:
+                        idx = self.combo_stop_task.findText(new_name)
+                        if idx >= 0:
+                            self.combo_stop_task.setCurrentIndex(idx)
+        except Exception as e:
+            logger.error(f"任务改名联动处理异常: {e}")
 
     # ---- 方案导入导出 ----
 
@@ -1402,6 +1487,9 @@ class MainWindow(QMainWindow):
         if isinstance(data, dict):
                 saved = data.get("settings", {})
                 self._global_settings.update(saved)
+                raw_history = self._global_settings.get("stats_history")
+                if hasattr(self, "_dashboard_page"):
+                    self._dashboard_page.load_stats_history(raw_history)
 
                 # 兼容旧配置：f8_enabled → hotkeys 迁移
                 if "hotkeys" not in self._global_settings:
@@ -1596,16 +1684,32 @@ class MainWindow(QMainWindow):
         self._hotkey_mgr.unregister_all()
         # 提前设置，防止 changeEvent 触发 fade_hide
         self._suppress_floating = True
-        # 同步所有设置到 _global_settings
-        self._sync_settings_to_global()
         if self._engine and self._engine.isRunning():
-            try:
-                self._engine.stop_condition_met.disconnect(self._on_stop_condition_met)
-            except Exception:
-                pass
+            for sig in (
+                self._engine.status_update,
+                self._engine.finished,
+                self._engine.stop_condition_met,
+                getattr(self._engine, "stats_updated", None),
+                getattr(self._engine, "task_triggered", None),
+            ):
+                if sig:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
             self._engine.stop()
             if not self._engine.wait(3000):
                 logger.error("引擎线程未在 3 秒内退出，进程即将结束")
+            # 补齐最后一包遥测余量（BUG-01 修复：防窗口关闭时最后一包扫描数据丢弃）
+            if hasattr(self, "_dashboard_page") and getattr(self._engine, "final_stats_delta", None):
+                self._dashboard_page.on_stats_updated(self._engine.final_stats_delta)
+                self._engine.final_stats_delta = {}
+            if hasattr(self, "_dashboard_page"):
+                self._dashboard_page.on_engine_stopped()
+
+        # 同步所有设置到 _global_settings (包含看板已结算的历史快照)
+        self._sync_settings_to_global()
+
         # ===== 新增：停止远程监控服务器（异步，不阻塞UI）=====
         if self._remote_server:
             from remote_server import stop_server_async

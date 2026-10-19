@@ -14,6 +14,7 @@ screenshots/
 # 打包产物
 软件本体/
 exe_dist/
+*.zip
 
 # IDE
 .vscode/
