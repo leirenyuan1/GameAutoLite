@@ -43,6 +43,7 @@ class FloatingWidget(QWidget):
             Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setFixedWidth(200)
 
         container = QWidget(self)
@@ -256,9 +257,18 @@ class FloatingWidget(QWidget):
             self._drag_pos = None
             self._last_pos = self.pos()
 
+    def _restore_main_window(self) -> None:
+        """恢复主窗口显示（保留最小化前的最大化状态并置前激活）."""
+        if self._main_win.windowState() & Qt.WindowState.WindowMaximized:
+            self._main_win.showMaximized()
+        else:
+            self._main_win.showNormal()
+        self._main_win.raise_()
+        self._main_win.activateWindow()
+
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._main_win.showNormal()
+            self._restore_main_window()
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
@@ -269,7 +279,7 @@ class FloatingWidget(QWidget):
         )
         action = menu.exec(event.globalPos())
         if action == action_restore:
-            self._main_win.showNormal()
+            self._restore_main_window()
         elif action == action_stop:
             self._main_win._stop_engine()
 

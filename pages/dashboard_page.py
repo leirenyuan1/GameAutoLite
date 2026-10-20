@@ -14,15 +14,17 @@ from __future__ import annotations
 import collections
 import copy
 import logging
+import os
+import subprocess
 import time
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import (
-    QColor, QFont, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen,
+    QColor, QFont, QFontMetrics, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout,
+    QApplication, QButtonGroup, QDialog, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
     QPushButton, QScrollArea, QToolTip, QVBoxLayout, QWidget,
 )
@@ -32,7 +34,7 @@ from styles.colors import (
     CLR_BTN_PRIMARY, CLR_CARD_BG, CLR_CARD_BORDER,
     CLR_CONTENT_BG, CLR_SIDEBAR_ACT, CLR_TEXT_MAIN, CLR_TEXT_SUB,
 )
-from styles.icons import button_icon
+from styles.icons import button_icon, set_label_icon
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,49 @@ def fit_letterbox_rect(avail_w: int, avail_h: int, target_w: int, target_h: int,
     fit_x = pad + (max_w - fit_w) // 2
     fit_y = pad + (max_h - fit_h) // 2
     return (fit_x, fit_y, fit_w, fit_h)
+
+
+class _DashboardCard(QFrame):
+    """看板卡片容器：允许水平自适应收缩至 550px 极窄视口 (420px 零溢出)."""
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+
+_dashboard_card_counter = 0
+
+
+def make_dashboard_card(title_text: str) -> tuple[_DashboardCard, QVBoxLayout]:
+    """创建支持窄窗口自适应收缩的分组卡片."""
+    global _dashboard_card_counter
+    _dashboard_card_counter += 1
+    card_id = f"dashboard_card_{_dashboard_card_counter}"
+
+    card = _DashboardCard()
+    card.setObjectName(card_id)
+    card.setStyleSheet(f"""
+        #{card_id} {{
+            background: {CLR_CARD_BG};
+            border: 1px solid {CLR_CARD_BORDER};
+            border-radius: 10px;
+        }}
+    """)
+    shadow = QGraphicsDropShadowEffect()
+    shadow.setBlurRadius(12)
+    shadow.setOffset(0, 2)
+    shadow.setColor(QColor(33, 150, 243, 30))
+    card.setGraphicsEffect(shadow)
+
+    card_layout = QVBoxLayout(card)
+    card_layout.setContentsMargins(12, 8, 12, 10)
+    card_layout.setSpacing(6)
+
+    header = QLabel(title_text)
+    header.setMinimumWidth(0)
+    header.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {CLR_TEXT_MAIN};")
+    card_layout.addWidget(header)
+
+    return card, card_layout
 
 
 # ------------------------------------------------------------
@@ -265,6 +310,7 @@ class ClickScatterDialog(QDialog):
     def __init__(self, dashboard: DashboardPage):
         super().__init__(parent=dashboard)
         self._dashboard = dashboard
+        self._hovered_pt: ScatterPoint | None = None
         self.setWindowTitle("屏幕点击分布高清大图")
         self.resize(850, 550)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
@@ -325,6 +371,18 @@ class ClickScatterDialog(QDialog):
         painter.setBrush(QColor("#43A047"))
         painter.drawEllipse(int(lx - 4.5), int(ly - 4.5), 9, 9)
 
+        # 悬停命中点动态十字准星与外环 (FIX-05)
+        if self._hovered_pt is not None and self._hovered_pt in pts:
+            hx = int(round(fit_x + self._hovered_pt.nx * fit_w))
+            hy = int(round(fit_y + self._hovered_pt.ny * fit_h))
+            pen_cross = QPen(QColor(239, 83, 80, 180), 1, Qt.PenStyle.DashLine)
+            painter.setPen(pen_cross)
+            painter.drawLine(fit_x, hy, fit_x + fit_w, hy)
+            painter.drawLine(hx, fit_y, hx, fit_y + fit_h)
+            painter.setPen(QPen(QColor("#EF5350"), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(hx - 6, hy - 6, 12, 12)
+
         # 右下角视口标注 (动态测量文字宽度 + 半透明底垫防遮挡落点)
         txt = f"{sw_px}×{sh_px} 真实物理视口"
         painter.setFont(QFont("Microsoft YaHei", 9))
@@ -342,10 +400,16 @@ class ClickScatterDialog(QDialog):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._dashboard._current_view_mode == "history":
             QToolTip.hideText()
+            if self._hovered_pt is not None:
+                self._hovered_pt = None
+                self.update()
             return
         pts = list(self._dashboard._scatter_points)
         if not pts:
             QToolTip.hideText()
+            if self._hovered_pt is not None:
+                self._hovered_pt = None
+                self.update()
             return
 
         sw_px, sh_px = get_primary_screen_physical_size()
@@ -360,6 +424,10 @@ class ClickScatterDialog(QDialog):
                 hovered_pt = pt
                 break
 
+        if hovered_pt != self._hovered_pt:
+            self._hovered_pt = hovered_pt
+            self.update()
+
         if hovered_pt:
             tip = f"[{hovered_pt.task_name}] 落点: ({hovered_pt.tx}, {hovered_pt.ty}) · 时间: {hovered_pt.timestamp_str}"
             QToolTip.showText(event.globalPosition().toPoint(), tip, self)
@@ -368,14 +436,23 @@ class ClickScatterDialog(QDialog):
 
     def resizeEvent(self, event) -> None:
         QToolTip.hideText()
+        if self._hovered_pt is not None:
+            self._hovered_pt = None
+            self.update()
         super().resizeEvent(event)
 
     def leaveEvent(self, event) -> None:
         QToolTip.hideText()
+        if self._hovered_pt is not None:
+            self._hovered_pt = None
+            self.update()
         super().leaveEvent(event)
 
     def closeEvent(self, event) -> None:
         QToolTip.hideText()
+        if self._hovered_pt is not None:
+            self._hovered_pt = None
+            self.update()
         super().closeEvent(event)
 
 
@@ -422,6 +499,12 @@ class DashboardPage(QScrollArea):
         self._rank_debounce_timer.setSingleShot(True)
         self._rank_debounce_timer.setInterval(200)
         self._rank_debounce_timer.timeout.connect(self._update_rank_display)
+
+        # 50ms 历史榜单防抖重算定时器 (FIX-05)
+        self._hist_resize_timer = QTimer(self)
+        self._hist_resize_timer.setSingleShot(True)
+        self._hist_resize_timer.setInterval(50)
+        self._hist_resize_timer.timeout.connect(self._update_history_clicks_display)
 
         # 5. 构建 UI 界面
         self._setup_ui()
@@ -483,11 +566,11 @@ class DashboardPage(QScrollArea):
         top_bar.addWidget(self.btn_clear)
         layout.addLayout(top_bar)
 
-        # KPI 4 卡片 (紧凑间距与字体，确保 550px 窄窗口下不溢出)
+        # KPI 4 卡片 (2x2 网格紧凑间距与字体，确保 550px 窄窗口下彻底杜绝水平溢出与裁切)
         kpi_grid = QGridLayout()
         kpi_grid.setSpacing(6)
         def _make_kpi(t: str):
-            c, cl = make_settings_card(t)
+            c, cl = make_dashboard_card(t)
             cl.setContentsMargins(6, 6, 6, 6)
             cl.setSpacing(2)
             if cl.count() > 0 and cl.itemAt(0).widget():
@@ -506,25 +589,25 @@ class DashboardPage(QScrollArea):
         c_cst, self.kpi_cst_v, self.kpi_cst_s = _make_kpi("扫描性能")
         kpi_grid.addWidget(c_dur, 0, 0)
         kpi_grid.addWidget(c_mat, 0, 1)
-        kpi_grid.addWidget(c_clk, 0, 2)
-        kpi_grid.addWidget(c_cst, 0, 3)
+        kpi_grid.addWidget(c_clk, 1, 0)
+        kpi_grid.addWidget(c_cst, 1, 1)
         layout.addLayout(kpi_grid)
 
         # 任务排行
-        rank_card, rank_layout = make_settings_card("任务触发排行与占比")
+        rank_card, rank_layout = make_dashboard_card("任务触发排行与占比")
         self.rank_container = QVBoxLayout()
         rank_layout.addLayout(self.rank_container)
         layout.addWidget(rank_card)
 
         # 双栏图表 (折线图 + 散点图与放大按钮接入)
         charts_row = QHBoxLayout()
-        c_trend, l_trend = make_settings_card("触发频率趋势 (最近15分钟)")
+        c_trend, l_trend = make_dashboard_card("触发频率趋势 (最近15分钟)")
         if l_trend.count() > 0 and l_trend.itemAt(0).widget():
             l_trend.itemAt(0).widget().setFixedHeight(24)  # 严格对齐右侧放大按钮卡片高度，消除6px高低肩
         self.trend_chart = TrendChartWidget()
         l_trend.addWidget(self.trend_chart)
 
-        c_scat, l_scat = make_settings_card("点击分布 (最近100次)")
+        c_scat, l_scat = make_dashboard_card("点击分布")
         self.btn_zoom = QPushButton()
         self.btn_zoom.setIcon(button_icon("maximize-2", CLR_TEXT_SUB, 14, self.devicePixelRatioF()))
         self.btn_zoom.setFixedSize(24, 24)
@@ -547,13 +630,104 @@ class DashboardPage(QScrollArea):
         self.scatter_chart = ClickScatterWidget()
         l_scat.addWidget(self.scatter_chart)
 
-        # 确保双卡片完整加入行布局
-        charts_row.addWidget(c_trend, 6)
-        charts_row.addWidget(c_scat, 4)
+        self.card_trend = c_trend
+        self.card_scat = c_scat
+
+        # 历史累计模式双卡片 (点击贡献榜 + 数据存储与备份迁移指引)
+        self.card_hist_clicks, l_hist_clicks = make_dashboard_card("各任务累计点击贡献")
+        self.card_hist_clicks.setMinimumWidth(0)
+        if l_hist_clicks.count() > 0 and l_hist_clicks.itemAt(0).widget():
+            hdr = l_hist_clicks.itemAt(0).widget()
+            hdr.setFixedHeight(24)
+            hdr.setMinimumWidth(0)
+        self.hist_clicks_container = QVBoxLayout()
+        self.hist_clicks_container.setContentsMargins(0, 4, 0, 4)
+        self.hist_clicks_container.setSpacing(8)
+        l_hist_clicks.addLayout(self.hist_clicks_container)
+        l_hist_clicks.addStretch(1)
+
+        self.card_hist_guide, l_hist_guide = make_dashboard_card("数据存储与备份迁移指引")
+        self.card_hist_guide.setMinimumWidth(0)
+        if l_hist_guide.count() > 0 and l_hist_guide.itemAt(0).widget():
+            hdr = l_hist_guide.itemAt(0).widget()
+            hdr.setFixedHeight(24)
+            hdr.setMinimumWidth(0)
+
+        guide_box = QFrame()
+        guide_box.setObjectName("guide_box_panel")
+        guide_box.setStyleSheet(
+            "#guide_box_panel {"
+            "  background: #F4F9FD;"
+            "  border: 1px solid #D2E3F7;"
+            "  border-radius: 6px;"
+            "}"
+        )
+        guide_box_layout = QVBoxLayout(guide_box)
+        guide_box_layout.setContentsMargins(8, 8, 8, 8)
+        guide_box_layout.setSpacing(8)
+
+        def _make_guide_row(icon_name: str, icon_clr: str, title_str: str, desc_str: str) -> QWidget:
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(6)
+            ic_lbl = QLabel()
+            ic_lbl.setFixedSize(16, 16)
+            set_label_icon(ic_lbl, icon_name, icon_clr, 14)
+            row_l.addWidget(ic_lbl, 0, Qt.AlignmentFlag.AlignTop)
+
+            col = QVBoxLayout()
+            col.setContentsMargins(0, 0, 0, 0)
+            col.setSpacing(1)
+            t_lbl = QLabel(title_str)
+            t_lbl.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {CLR_TEXT_MAIN};")
+            d_lbl = QLabel(desc_str)
+            d_lbl.setWordWrap(True)
+            d_lbl.setStyleSheet(f"font-size: 10px; color: {CLR_TEXT_SUB};")
+            col.addWidget(t_lbl)
+            col.addWidget(d_lbl)
+            row_l.addLayout(col, 1)
+            return row_w
+
+        guide_box_layout.addWidget(_make_guide_row(
+            "save", CLR_BTN_PRIMARY, "本地自动保存",
+            "战绩与配置存至根目录 config.json，模板图存至 screenshots/ 目录。"
+        ))
+        guide_box_layout.addWidget(_make_guide_row(
+            "folder", CLR_SIDEBAR_ACT, "版本升级迁移",
+            "换机或升级时，将旧版 config.json 与 screenshots/ 复制覆盖到新版即可继承全部数据。"
+        ))
+        guide_box_layout.addWidget(_make_guide_row(
+            "info", CLR_TEXT_SUB, "清空重置说明",
+            "点击右上角「清空统计」将归零所有历史累计战绩。"
+        ))
+        l_hist_guide.addWidget(guide_box)
+        l_hist_guide.addStretch(1)
+
+        self.btn_open_config_dir = QPushButton("打开配置所在目录")
+        self.btn_open_config_dir.setIcon(button_icon("folder", CLR_TEXT_MAIN, 14, self.devicePixelRatioF()))
+        self.btn_open_config_dir.setFixedHeight(28)
+        self.btn_open_config_dir.setStyleSheet(
+            f"QPushButton {{ background: #FFFFFF; border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px; "
+            f"padding: 0 10px; font-size: 11px; color: {CLR_TEXT_MAIN}; font-weight: bold; }} "
+            f"QPushButton:hover {{ border-color: #B0CDE8; color: {CLR_BTN_PRIMARY}; }}"
+        )
+        self.btn_open_config_dir.clicked.connect(self._on_open_config_dir)
+        l_hist_guide.addWidget(self.btn_open_config_dir)
+
+        # 初始默认处于 session 模式，隐藏历史卡片
+        self.card_hist_clicks.setVisible(False)
+        self.card_hist_guide.setVisible(False)
+
+        # 确保全部卡片加入行布局 (历史双卡采用 1:1 均分自适应)
+        charts_row.addWidget(self.card_trend, 6)
+        charts_row.addWidget(self.card_scat, 4)
+        charts_row.addWidget(self.card_hist_clicks, 1)
+        charts_row.addWidget(self.card_hist_guide, 1)
         layout.addLayout(charts_row)
 
         # 流水卡片 (关闭水平滚动条，统一行高与精确固定高度 136px，消除半截横切)
-        c_log, l_log = make_settings_card("最近执行流水 (最近50条)")
+        c_log, l_log = make_dashboard_card("最近执行流水 (最近50条)")
         btn_copy = QPushButton("复制记录")
         btn_copy.setIcon(button_icon("copy", CLR_TEXT_SUB, 14, self.devicePixelRatioF()))
         btn_copy.setFixedHeight(24)
@@ -587,6 +761,12 @@ class DashboardPage(QScrollArea):
         self.setWidget(container)
         self._update_ui_display()
         self._refresh_logs_display()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if getattr(self, "_current_view_mode", "session") == "history":
+            if hasattr(self, "_hist_resize_timer"):
+                self._hist_resize_timer.start()
 
     # ------------------------------------------------------------
     # 单例弹窗工厂与销毁回调
@@ -645,7 +825,7 @@ class DashboardPage(QScrollArea):
                 logger.warning("历史数据非合法字典，标记加载失败以保护原有持久化数据。")
                 self._refresh_logs_display()
                 return
-            self._history["total_run_seconds"] = float(raw.get("total_run_seconds", 0.0))
+            self._history["total_run_seconds"] = float(raw.get("total_run_seconds", raw.get("total_run_time_sec", 0.0)))
             self._history["total_scans"] = int(raw.get("total_scans", 0))
             self._history["total_scan_cost_ms"] = float(raw.get("total_scan_cost_ms", 0.0))
             self._history["total_matches"] = int(raw.get("total_matches", 0))
@@ -741,13 +921,24 @@ class DashboardPage(QScrollArea):
             self._refresh_logs_display()
             if self._scatter_dialog and self._scatter_dialog.isVisible():
                 self._scatter_dialog.update()
+            if self._main_window and hasattr(self._main_window, "_save_config"):
+                self._main_window._save_config()
         except Exception as e:
             logger.error(f"看板停机刷新异常: {e}")
 
     @pyqtSlot(dict)
     def on_stats_updated(self, data: dict) -> None:
         try:
+            if not data:
+                return
             if not self._running:
+                # 停机后到达的在途遥测包或结算包，补计入历史与会话，杜绝无声丢弃
+                self._session["scans"] += data.get("scan_delta", 0)
+                self._session["scan_cost_ms"] += data.get("scan_cost_delta_ms", 0.0)
+                self._session["last_cost_ms"] = data.get("last_cost_ms", 0.0)
+                self._history["total_scans"] += data.get("scan_delta", 0)
+                self._history["total_scan_cost_ms"] += data.get("scan_cost_delta_ms", 0.0)
+                self._update_kpi_display()
                 return
             self._session["scans"] += data.get("scan_delta", 0)
             self._session["scan_cost_ms"] += data.get("scan_cost_delta_ms", 0.0)
@@ -763,7 +954,7 @@ class DashboardPage(QScrollArea):
     def on_task_triggered(self, data: dict) -> None:
         """任务触发完整方法 (全屏物理散点装配、最新在前流水写入、弹窗实时联动)."""
         try:
-            if not self._running:
+            if not data:
                 return
             self._session["matches"] += 1
             clicks = data.get("clicks") or []
@@ -773,6 +964,15 @@ class DashboardPage(QScrollArea):
             ts["matches"] += 1
             ts["clicks"] += len(clicks)
             ts["total_score"] += data.get("score", 0.0)
+
+            # 若停机结算已完成，同步补记到历史统计中 (Bug-09)
+            if not self._running:
+                self._history["total_matches"] += 1
+                self._history["total_clicks"] += len(clicks)
+                hs = self._history["task_stats"].setdefault(tname, {"matches": 0, "clicks": 0, "total_score": 0.0})
+                hs["matches"] += 1
+                hs["clicks"] += len(clicks)
+                hs["total_score"] += data.get("score", 0.0)
 
             # 趋势折线桶
             epoch_min = int(time.time() // 60)
@@ -791,6 +991,8 @@ class DashboardPage(QScrollArea):
             coord_str = f"{clicks[0][0]},{clicks[0][1]}" if clicks else "—"
             text = f"{tstr} 触发「{tname}」· 精度 {data.get('score')}% · 落点 ({coord_str}) · 延迟 {data.get('delay_ms')}ms"
             self._session_logs.appendleft(text)
+            if not self._running:
+                self._history_logs.appendleft(text)
 
             # 仅当处于 session 模式时动态插入 UI
             if self._current_view_mode == "session":
@@ -802,18 +1004,24 @@ class DashboardPage(QScrollArea):
                 while self.list_logs.count() > 50:
                     self.list_logs.takeItem(self.list_logs.count() - 1)
 
-            self._update_kpi_display()
-            is_sess = (self._current_view_mode == "session")
-            self.trend_chart.update_data(self._trend_buckets, is_history=not is_sess)
-            self.scatter_chart.update_data(self._scatter_points, is_history=not is_sess)
-            if self._scatter_dialog and self._scatter_dialog.isVisible():
-                self._scatter_dialog.update()
+            if not self._running:
+                self._update_ui_display()
+                self._refresh_logs_display()
+                if self._main_window and hasattr(self._main_window, "_save_config"):
+                    self._main_window._save_config()
+            else:
+                self._update_kpi_display()
+                is_sess = (self._current_view_mode == "session")
+                self.trend_chart.update_data(self._trend_buckets, is_history=not is_sess)
+                self.scatter_chart.update_data(self._scatter_points, is_history=not is_sess)
+                if self._scatter_dialog and self._scatter_dialog.isVisible():
+                    self._scatter_dialog.update()
 
-            # 排行列表节流刷新
-            if hasattr(self, "_rank_debounce_timer") and not self._rank_debounce_timer.isActive():
-                self._rank_debounce_timer.start()
-            elif not hasattr(self, "_rank_debounce_timer"):
-                self._update_rank_display()
+                # 排行列表节流刷新
+                if hasattr(self, "_rank_debounce_timer") and not self._rank_debounce_timer.isActive():
+                    self._rank_debounce_timer.start()
+                elif not hasattr(self, "_rank_debounce_timer"):
+                    self._update_rank_display()
         except Exception as e:
             logger.error(f"触发记录异常: {e}")
 
@@ -874,11 +1082,11 @@ class DashboardPage(QScrollArea):
         try:
             is_sess = (self._current_view_mode == "session")
             cur = self._session if is_sess else {
-                "run_seconds": self._history["total_run_seconds"],
-                "matches": self._history["total_matches"],
-                "clicks": self._history["total_clicks"],
-                "scans": self._history["total_scans"],
-                "scan_cost_ms": self._history["total_scan_cost_ms"],
+                "run_seconds": self._history.get("total_run_seconds", self._history.get("total_run_time_sec", 0.0)),
+                "matches": self._history.get("total_matches", 0),
+                "clicks": self._history.get("total_clicks", 0),
+                "scans": self._history.get("total_scans", 0),
+                "scan_cost_ms": self._history.get("total_scan_cost_ms", 0.0),
                 "last_cost_ms": 0.0,
             }
             sec = int(cur["run_seconds"])
@@ -911,10 +1119,137 @@ class DashboardPage(QScrollArea):
             is_sess = (self._current_view_mode == "session")
             if self.btn_zoom:
                 self.btn_zoom.setVisible(is_sess)
-            self.trend_chart.update_data(self._trend_buckets, is_history=not is_sess)
-            self.scatter_chart.update_data(self._scatter_points, is_history=not is_sess)
+            if hasattr(self, "card_trend") and hasattr(self, "card_scat"):
+                self.card_trend.setVisible(is_sess)
+                self.card_scat.setVisible(is_sess)
+            if hasattr(self, "card_hist_clicks") and hasattr(self, "card_hist_guide"):
+                self.card_hist_clicks.setVisible(not is_sess)
+                self.card_hist_guide.setVisible(not is_sess)
+            if is_sess:
+                self.trend_chart.update_data(self._trend_buckets, is_history=False)
+                self.scatter_chart.update_data(self._scatter_points, is_history=False)
+            else:
+                self._update_history_clicks_display()
         except Exception as e:
             logger.error(f"刷新看板视图异常: {e}")
+
+    def _on_open_config_dir(self) -> None:
+        try:
+            from config_manager import CONFIG_FILE
+            if not os.path.exists(CONFIG_FILE) and self._main_window and hasattr(self._main_window, "_save_config"):
+                self._main_window._save_config()
+            norm_path = os.path.normpath(os.path.abspath(CONFIG_FILE))
+            if os.path.exists(norm_path):
+                subprocess.Popen(["explorer", f"/select,{norm_path}"])
+            else:
+                os.startfile(os.path.dirname(norm_path))
+        except Exception as e:
+            logger.error(f"打开配置文件目录失败: {e}")
+
+    def _update_history_clicks_display(self) -> None:
+        try:
+            if not hasattr(self, "hist_clicks_container") or self.hist_clicks_container is None:
+                return
+
+            while self.hist_clicks_container.count() > 0:
+                it = self.hist_clicks_container.takeAt(0)
+                w = it.widget()
+                if w is not None:
+                    w.hide()
+                    w.deleteLater()
+
+            task_stats = self._history.get("task_stats", {})
+            total_clicks = self._history.get("total_clicks", 0)
+
+            if not task_stats or total_clicks <= 0:
+                empty = QLabel("暂无历史点击数据，运行任务后在此展示累计战绩")
+                empty.setWordWrap(True)
+                empty.setMinimumWidth(0)
+                empty.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px; padding: 12px;")
+                empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.hist_clicks_container.addWidget(empty)
+                return
+
+            card_w = self.card_hist_clicks.width() if hasattr(self, "card_hist_clicks") else 0
+            if card_w < 140 and self.viewport() and self.viewport().width() > 300:
+                card_w = (self.viewport().width() - 30) // 2
+            row_content_width = card_w - 28 if card_w > 0 else 0
+            calc_row_w = 165 if row_content_width < 140 else row_content_width
+
+            for name, s in sorted(task_stats.items(), key=lambda x: x[1].get("clicks", 0), reverse=True):
+                clicks = s.get("clicks", 0)
+                pct = (clicks / float(total_clicks) * 100.0) if total_clicks > 0 else 0.0
+                matches = s.get("matches", 0)
+                ratio = (clicks / float(matches)) if matches > 0 else 0.0
+
+                if clicks < 10000:
+                    val_text = f"{clicks} ({pct:.0f}%)"
+                elif clicks < 100000:
+                    val_text = f"{clicks / 1000.0:.1f}k ({pct:.0f}%)"
+                else:
+                    val_text = f"{clicks / 1000.0:.0f}k ({pct:.0f}%)"
+
+                item_widget = QWidget()
+                item_layout = QVBoxLayout(item_widget)
+                item_layout.setContentsMargins(0, 2, 0, 2)
+                item_layout.setSpacing(3)
+
+                h_row = QHBoxLayout()
+                h_row.setContentsMargins(0, 0, 0, 0)
+                h_row.setSpacing(4)
+
+                font_val = QFont("Microsoft YaHei")
+                font_val.setPixelSize(10)
+                lbl_val = QLabel(val_text)
+                lbl_val.setFont(font_val)
+                lbl_val.setStyleSheet(f"font-size: 10px; color: {CLR_TEXT_SUB};")
+                lbl_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+                val_w = QFontMetrics(font_val).horizontalAdvance(val_text)
+                avail_w = max(24, calc_row_w - val_w - 12)
+
+                font_name = QFont("Microsoft YaHei")
+                font_name.setPixelSize(11)
+                font_name.setWeight(QFont.Weight.Bold)
+                elided_name = QFontMetrics(font_name).elidedText(name, Qt.TextElideMode.ElideRight, avail_w)
+                lbl_name = QLabel(elided_name)
+                lbl_name.setFont(font_name)
+                lbl_name.setMaximumWidth(avail_w)
+                lbl_name.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {CLR_TEXT_MAIN};")
+
+                h_row.addWidget(lbl_name)
+                h_row.addStretch(1)
+                h_row.addWidget(lbl_val)
+
+                bar = QProgressBar()
+                bar.setFixedHeight(6)
+                bar.setTextVisible(False)
+                bar.setRange(0, 1000)
+                bar.setValue(int(pct * 10))
+                bar.setStyleSheet(f"""
+                    QProgressBar {{
+                        background: #EAF4FD;
+                        border: none;
+                        border-radius: 3px;
+                    }}
+                    QProgressBar::chunk {{
+                        background: {CLR_SIDEBAR_ACT};
+                        border-radius: 3px;
+                    }}
+                """)
+
+                item_layout.addLayout(h_row)
+                item_layout.addWidget(bar)
+
+                tip_text = f"{name}: 累计点击 {clicks:,} 次, 占比 {pct:.1f}%, 连击率 {ratio:.1f}"
+                item_widget.setToolTip(tip_text)
+                lbl_name.setToolTip(tip_text)
+                lbl_val.setToolTip(tip_text)
+                bar.setToolTip(tip_text)
+
+                self.hist_clicks_container.addWidget(item_widget)
+        except Exception as e:
+            logger.error(f"刷新历史点击榜异常: {e}")
 
     def _update_rank_display(self) -> None:
         try:
@@ -945,7 +1280,10 @@ class DashboardPage(QScrollArea):
                     row.setContentsMargins(0, 2, 0, 2)
                     row.setSpacing(8)
 
-                    lbl_n = QLabel(name)
+                    lbl_n = QLabel()
+                    lbl_n.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Bold))
+                    lbl_n.setText(lbl_n.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 92))
+                    lbl_n.setToolTip(name)
                     lbl_n.setFixedWidth(95)
                     lbl_n.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {CLR_TEXT_MAIN};")
 
@@ -988,6 +1326,8 @@ class DashboardPage(QScrollArea):
                 self.btn_zoom.setVisible(mode == "session")
             self._update_ui_display()
             self._refresh_logs_display()
+            if mode == "history" and hasattr(self, "_hist_resize_timer"):
+                self._hist_resize_timer.start(0)
             if self._scatter_dialog and self._scatter_dialog.isVisible():
                 QToolTip.hideText()
                 self._scatter_dialog.update()
@@ -1086,6 +1426,17 @@ class DashboardPage(QScrollArea):
                         target_dict[new_name]["total_score"] += old_stat.get("total_score", 0.0)
                     else:
                         target_dict[new_name] = old_stat
+
+            # 同步更新散点大图队列中的已有点任务名（PRE-05）
+            if hasattr(self, "_scatter_points") and self._scatter_points:
+                new_queue = collections.deque(maxlen=self._scatter_points.maxlen)
+                for pt in self._scatter_points:
+                    if pt.task_name == old_name:
+                        new_queue.append(ScatterPoint(pt.nx, pt.ny, pt.tx, pt.ty, new_name, pt.timestamp_str))
+                    else:
+                        new_queue.append(pt)
+                self._scatter_points = new_queue
+
             self._update_ui_display()
         except Exception as e:
             logger.error(f"任务改名统计迁移异常: {e}")

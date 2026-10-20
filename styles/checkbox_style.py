@@ -10,7 +10,7 @@ from styles.colors import CLR_BTN_PRIMARY
 
 
 class CheckboxStyle(QProxyStyle):
-    """蓝色圆角方块 + 白色 ✓ 的勾选框."""
+    """蓝色圆角方块 + 白色勾选标志的勾选框."""
 
     def drawPrimitive(self, element, option, painter, widget=None):
         if element != QStyle.PrimitiveElement.PE_IndicatorCheckBox:

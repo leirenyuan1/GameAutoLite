@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QImage, QIntValidator
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QCheckBox, QLineEdit, QFrame, QScrollArea,
+    QCheckBox, QLineEdit, QFrame, QScrollArea, QComboBox,
 )
 
 from styles.colors import (
@@ -142,27 +142,44 @@ class RemoteMonitorPage(QWidget):
         # ---- 信息卡片 ----
         info_card, info_layout = make_settings_card("连接信息")
         
-        # 用 QGridLayout 让三行标签列宽度一致，值起始位置自动对齐
+        # 用 QGridLayout 让三行标签列宽度一致，值起始位置自动左对齐，右侧列吸收多余拉伸
         info_grid = QGridLayout()
         info_grid.setHorizontalSpacing(8)
         info_grid.setVerticalSpacing(6)
-        info_grid.setColumnStretch(1, 1)
+        info_grid.setColumnStretch(0, 0)
+        info_grid.setColumnStretch(1, 0)
+        info_grid.setColumnStretch(2, 1)
 
         self.label_port = QLabel("—")
         self.label_port.setStyleSheet(f"color: {CLR_TEXT_MAIN}; font-weight: bold;")
-        info_grid.addWidget(QLabel("端口："), 0, 0)
-        info_grid.addWidget(self.label_port, 0, 1)
+        info_grid.addWidget(QLabel("端口："), 0, 0, Qt.AlignmentFlag.AlignLeft)
+        info_grid.addWidget(self.label_port, 0, 1, Qt.AlignmentFlag.AlignLeft)
         
         self.label_ip = QLabel("—")
         self.label_ip.setStyleSheet(f"color: {CLR_TEXT_MAIN}; font-weight: bold;")
-        info_grid.addWidget(QLabel("局域网IP："), 1, 0)
-        info_grid.addWidget(self.label_ip, 1, 1)
+        self.combo_ip = QComboBox()
+        self.combo_ip.setFixedWidth(160)
+        self.combo_ip.wheelEvent = lambda event: event.ignore()
+        self.combo_ip.setStyleSheet(f"""
+            QComboBox {{
+                background: {CLR_CARD_BG}; border: 1px solid {CLR_CARD_BORDER};
+                border-radius: 6px; padding: 2px 8px; font-size: 12px;
+                color: {CLR_TEXT_MAIN}; font-weight: bold;
+            }}
+            QComboBox:hover {{ border-color: {CLR_BTN_PRIMARY}; }}
+        """)
+        self.combo_ip.currentTextChanged.connect(self._on_ip_selected)
+        self.combo_ip.hide()
+
+        info_grid.addWidget(QLabel("局域网IP："), 1, 0, Qt.AlignmentFlag.AlignLeft)
+        info_grid.addWidget(self.label_ip, 1, 1, Qt.AlignmentFlag.AlignLeft)
+        info_grid.addWidget(self.combo_ip, 1, 1, Qt.AlignmentFlag.AlignLeft)
 
         self.label_token = QLabel("—")
         self.label_token.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px;")
         self.label_token.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        info_grid.addWidget(QLabel("访问令牌："), 2, 0)
-        info_grid.addWidget(self.label_token, 2, 1)
+        info_grid.addWidget(QLabel("访问令牌："), 2, 0, Qt.AlignmentFlag.AlignLeft)
+        info_grid.addWidget(self.label_token, 2, 1, Qt.AlignmentFlag.AlignLeft)
 
         info_layout.addLayout(info_grid)
 
@@ -206,24 +223,42 @@ class RemoteMonitorPage(QWidget):
             self._update_ui_stopped()
 
     def _update_ui_running(self):
-        """更新UI为运行状态"""
-        from remote_server import get_local_ip
-        ip = get_local_ip()
+        """更新UI为运行状态（支持多网卡自适应下拉与单网卡纯文本展示）"""
+        from remote_server import get_local_ips
+        ips = get_local_ips()
         
         # 更新底部信息区
         self.label_port.setText(str(self._port))
         self.label_token.setText(self._token or "—")
         
         # 检测IP是否有效（127.0.0.1表示无法获取局域网IP）
-        if ip == "127.0.0.1":
+        if ips == ["127.0.0.1"]:
+            self.combo_ip.hide()
             self.qrcode_widget.hide()
             self.url_widget.hide()
             self.hint_label.show()
             self.hint_label.setText("无法获取局域网IP\n请检查网络连接")
             self.hint_label.setStyleSheet("color: #EF5350; font-size: 12px;")
             self.label_ip.setText("127.0.0.1（本机）")
+            self.label_ip.show()
+            self._current_url = ""
             return
         
+        if len(ips) == 1:
+            self.combo_ip.hide()
+            self.label_ip.setText(ips[0])
+            self.label_ip.show()
+            ip = ips[0]
+        else:
+            self.label_ip.hide()
+            self.combo_ip.blockSignals(True)
+            self.combo_ip.clear()
+            self.combo_ip.addItems(ips)
+            self.combo_ip.setCurrentIndex(0)
+            self.combo_ip.blockSignals(False)
+            self.combo_ip.show()
+            ip = ips[0]
+
         # 访问令牌以 URL fragment 携带（不进 query/日志）, 扫码即自动登录
         url = f"http://{ip}:{self._port}/#tk={self._token}"
         self._current_url = url
@@ -232,11 +267,23 @@ class RemoteMonitorPage(QWidget):
         self.qrcode_widget.show()
         self.url_widget.show()
         self.hint_label.hide()
-        self.label_ip.setText(ip)
+
+    def _on_ip_selected(self, ip: str):
+        """用户切换多网卡下拉项时同步更新 URL 与二维码"""
+        if not ip or not self._port or not self._server:
+            return
+        url = f"http://{ip}:{self._port}/#tk={self._token}"
+        self._current_url = url
+        self.label_url.setText(url)
+        self._update_qrcode(url)
 
     def _update_ui_stopped(self):
         """更新UI为停止状态"""
         self._current_url = ""
+        self.combo_ip.hide()
+        self.combo_ip.blockSignals(True)
+        self.combo_ip.clear()
+        self.combo_ip.blockSignals(False)
         self.qrcode_widget.hide()
         self.url_widget.hide()
         self.hint_label.show()
@@ -244,6 +291,7 @@ class RemoteMonitorPage(QWidget):
         self.hint_label.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px;")
         self.label_port.setText("—")
         self.label_ip.setText("—")
+        self.label_ip.show()
         self.label_token.setText("—")
 
     def _update_qrcode(self, url: str):

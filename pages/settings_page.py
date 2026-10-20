@@ -15,7 +15,7 @@ from styles.colors import (
     CLR_BTN_PRIMARY,
 )
 from styles.icons import IconButton, ICON_BTN
-from pages.utils import make_settings_card
+from pages.utils import make_settings_card, DefaultIntValidator
 
 if TYPE_CHECKING:
     from main_window import MainWindow
@@ -77,7 +77,8 @@ class SettingsPage(QWidget):
         self.edit_scan_interval = QLineEdit("200")
         self.edit_scan_interval.setFixedWidth(64)  # 原为 55
         self.edit_scan_interval.setAlignment(Qt.AlignmentFlag.AlignCenter)  # 以下两行为新增
-        self.edit_scan_interval.setValidator(QIntValidator(0, 10000))
+        self.edit_scan_interval.setValidator(DefaultIntValidator(0, 10000, 200, self))
+        self.edit_scan_interval.editingFinished.connect(self.validate_inputs)
         # 以下 QSS 为新增
         self.edit_scan_interval.setStyleSheet(f"""
             QLineEdit {{
@@ -328,10 +329,15 @@ class SettingsPage(QWidget):
 
     def populate_hotkeys(self, hotkeys: list[dict]) -> None:
         """用配置数据填充快捷键列表 UI。"""
-        # 注意：这里是共享引用，不是拷贝
-        # _hotkeys 直接引用 _global_settings["hotkeys"]，修改 _hotkeys 里的 dict 会同步到 _global_settings
-        # 这是有意设计 — closeEvent 时 _global_settings 被统一保存到 config.json
-        self._hotkeys = hotkeys
+        if not isinstance(hotkeys, list):
+            hotkeys = []
+        norm = []
+        for h in hotkeys:
+            if isinstance(h, dict) and "key" in h:
+                norm.append(h)
+            elif isinstance(h, str) and h:
+                norm.append({"key": h, "enabled": True})
+        self._hotkeys = norm
         self._rebuild_hotkey_list()
 
     def _rebuild_hotkey_list(self) -> None:
@@ -433,4 +439,12 @@ class SettingsPage(QWidget):
         self._hotkeys[:] = [h for h in self._hotkeys if h["key"] != key]
         self._rebuild_hotkey_list()
         self.hotkeys_changed.emit(self._hotkeys)
+
+    def validate_inputs(self) -> None:
+        """设置页扫描间隔强制校验回填 (FEAT-06)."""
+        if hasattr(self, "edit_scan_interval") and self.edit_scan_interval.validator():
+            self.edit_scan_interval.setText(
+                self.edit_scan_interval.validator().fixup(self.edit_scan_interval.text())
+            )
+
 

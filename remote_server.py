@@ -14,7 +14,7 @@ from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 from PyQt6.QtCore import QMetaObject, Qt
 
-from image_engine import take_screenshot
+from image_engine import take_screenshot, close_thread_sct
 from styles.icons import _BODY
 
 
@@ -180,9 +180,16 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
             timer = setInterval(updateStatus, refreshInterval);
         }
 
-        function enterTokenScreen(msg) {
+        function enterTokenScreen(msg, clearToken = false) {
             authState = 'idle';
             stopPolling();
+            if (clearToken) {
+                token = '';
+                try { localStorage.removeItem('rm_token'); } catch (e) {}
+                if (location.hash.startsWith('#tk=')) {
+                    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+                }
+            }
             document.getElementById('token-card').style.display = 'block';
             document.getElementById('token-input').value = token || '';
             const bar = document.getElementById('status-bar');
@@ -227,12 +234,12 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
             bar.style.color = '#43A047';
         }
 
-        // 一次性校验token: 通过 -> 落库localStorage + 恢复轮询; 401 -> 输入卡
+        // 一次性校验token: 通过 -> 落库localStorage + 恢复轮询; 401 -> 清空输入卡
         function validateAndStart() {
             authState = 'checking';
             fetchWithTimeout('/status', { headers: authHeaders() }, 3000)
                 .then(r => {
-                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期'); return null; }
+                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期', true); return null; }
                     if (!r.ok) throw new Error('http ' + r.status);
                     return r.json();
                 })
@@ -244,7 +251,7 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
                     renderStatus(data);
                     startPolling();
                 })
-                .catch(() => enterTokenScreen('无法连接服务器，请检查网络'));
+                .catch(() => enterTokenScreen('无法连接服务器，请检查网络', false));
         }
 
         function submitToken() {
@@ -290,7 +297,7 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
         function updateStatus() {
             fetchWithTimeout('/status', { headers: authHeaders() }, 2000)
                 .then(r => {
-                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期'); return null; }
+                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期', true); return null; }
                     if (!r.ok) throw new Error('http ' + r.status);
                     return r.json();
                 })
@@ -300,7 +307,7 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
                 })
                 .catch(() => {
                     const bar = document.getElementById('status-bar');
-                    bar.textContent = '连接断开，请刷新页面';
+                    bar.textContent = '连接断开，正在尝试重连...';
                     bar.style.color = '#EF5350';
                 });
         }
@@ -310,7 +317,7 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
             btn.disabled = true;
             fetchWithTimeout('/toggle', { method: 'POST', headers: authHeaders() }, 3000)
                 .then(r => {
-                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期'); return; }
+                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期', true); return; }
                     if (!r.ok) throw new Error('http ' + r.status);
                     setTimeout(updateStatus, 500);
                 })
@@ -328,7 +335,7 @@ MOBILE_HTML_TEMPLATE = """<!DOCTYPE html>
 
             fetch('/screenshot', { headers: authHeaders() })
                 .then(r => {
-                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期'); throw new Error('unauthorized'); }
+                    if (r.status === 401) { enterTokenScreen('令牌无效或已过期', true); throw new Error('unauthorized'); }
                     if (!r.ok) throw new Error('http ' + r.status);
                     return r.blob();
                 })
@@ -460,31 +467,34 @@ class StatusHandler(BaseHTTPRequestHandler):
     
     def handle_screenshot(self):
         """处理截图请求（数据准备与发送分离，避免响应损坏）"""
-        # 先完成所有数据准备，再发送响应
         try:
-            img = take_screenshot()
-            success, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            if not success:
-                raise RuntimeError("JPEG编码失败")
-            data = buffer.tobytes()
-        except Exception as e:
-            # 数据准备阶段失败，此时还没发任何响应，可以安全发500
-            self.send_response(500)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            # 先完成所有数据准备，再发送响应
+            try:
+                img = take_screenshot()
+                success, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if not success:
+                    raise RuntimeError("JPEG编码失败")
+                data = buffer.tobytes()
+            except Exception as e:
+                # 数据准备阶段失败，此时还没发任何响应，可以安全发500
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(f"截图失败: {e}".encode('utf-8'))
+                return
+            # 数据准备成功，发送200
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-store')
             self.end_headers()
-            self.wfile.write(f"截图失败: {e}".encode('utf-8'))
-            return
-        # 数据准备成功，发送200
-        self.send_response(200)
-        self.send_header('Content-Type', 'image/jpeg')
-        self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
-        self.wfile.write(data)
+            self.wfile.write(data)
+        finally:
+            close_thread_sct()
 
 
 def _is_blacklisted_ip(ip: str) -> bool:
-    """检查 IP 是否属于黑名单 (0.*, 127.*, 169.254.*, 198.18.*, 198.19.*)"""
+    """检查 IP 是否属于黑名单 (0.*, 127.*, 169.254.*, 组播/保留地址 >= 224)"""
     if not ip:
         return True
     parts = ip.split(".")
@@ -498,13 +508,13 @@ def _is_blacklisted_ip(ip: str) -> bool:
         return True
     if p0 == 169 and p1 == 254:
         return True
-    if p0 == 198 and (p1 == 18 or p1 == 19):
+    if p0 >= 224:
         return True
     return False
 
 
 def _ip_priority(ip: str) -> int:
-    """网段优先级：192.168.* (0) > 10.* (1) > 172.16~31.* (2) > 其它 (3)"""
+    """网段优先级：192.168.* (0) > 10.* (1) > 172.16~31.* (2) > 100.64~127.* (Tailscale等, 3) > 198.18~19.* (Mihomo TUN等, 4) > 其它 (5)"""
     try:
         parts = ip.split(".")
         p0, p1 = int(parts[0]), int(parts[1])
@@ -514,43 +524,50 @@ def _ip_priority(ip: str) -> int:
             return 1
         if p0 == 172 and 16 <= p1 <= 31:
             return 2
+        if p0 == 100 and 64 <= p1 <= 127:
+            return 3
+        if p0 == 198 and (p1 == 18 or p1 == 19):
+            return 4
     except Exception:
         pass
-    return 3
+    return 5
 
 
-def get_local_ip() -> str:
-    """获取本机局域网IP地址（BUG-12: 纯标准库三级链式策略）"""
-    # 第一级：默认出网路由（最优先）
+def get_local_ips() -> list[str]:
+    """获取本机所有可用局域网 IPv4 地址列表（网段优先级 + 默认路由优先排序）."""
+    candidates: set[str] = set()
+    udp_ip: str = ""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             if ip and not _is_blacklisted_ip(ip):
-                return ip
+                udp_ip = ip
+                candidates.add(ip)
         finally:
             s.close()
     except Exception:
         pass
 
-    # 第二级：智能回退（防 TUN 劫持）
     try:
         hostname = socket.gethostname()
-        addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET)
-        candidates = set()
-        for item in addr_info:
-            candidate_ip = item[4][0]
-            if candidate_ip and not _is_blacklisted_ip(candidate_ip):
-                candidates.add(candidate_ip)
-        if candidates:
-            sorted_candidates = sorted(list(candidates), key=_ip_priority)
-            return sorted_candidates[0]
+        for item in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = item[4][0]
+            if ip and not _is_blacklisted_ip(ip):
+                candidates.add(ip)
     except Exception:
         pass
 
-    # 第三级：离线兜底
-    return "127.0.0.1"
+    if not candidates:
+        return ["127.0.0.1"]
+
+    # 排序键：(_ip_priority(ip), 0 if ip == udp_ip else 1, ip)，确保常规局域网第一、同网段下默认路由优先
+    return sorted(candidates, key=lambda ip: (_ip_priority(ip), 0 if ip == udp_ip else 1, ip))
+
+
+def get_local_ip() -> str:
+    return get_local_ips()[0]
 
 
 def start_server(main_window, max_port_attempts: int = 10) -> tuple[HTTPServer, threading.Thread, int]:

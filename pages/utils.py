@@ -2,10 +2,30 @@
 pages 共享辅助函数 (pages/utils.py)
 """
 
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QIntValidator
 from PyQt6.QtWidgets import QFrame, QVBoxLayout, QLabel, QGraphicsDropShadowEffect
 
 from styles.colors import CLR_CARD_BG, CLR_CARD_BORDER, CLR_TEXT_MAIN
+
+
+class DefaultIntValidator(QIntValidator):
+    """带默认兜底回填的整数校验器 (FEAT-06)."""
+
+    def __init__(self, bottom: int, top: int, default: int, parent=None):
+        super().__init__(bottom, top, parent)
+        self._default = default
+
+    def fixup(self, input_str: str) -> str:
+        s = input_str.strip()
+        if not s or s in ("-", "+"):
+            return str(self._default)
+        try:
+            val = int(s)
+            if val < self.bottom() or val > self.top():
+                return str(self._default)
+            return str(val)
+        except ValueError:
+            return str(self._default)
 
 
 # 模块级计数器，保证所有卡片 objectName 全局唯一

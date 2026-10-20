@@ -15,7 +15,7 @@ from styles.colors import (
     CLR_BTN_PRIMARY, CLR_BTN_DANGER, CLR_CONTENT_BG,
 )
 from styles.icons import IconButton, ICON_BTN
-from pages.utils import make_settings_card
+from pages.utils import make_settings_card, DefaultIntValidator
 
 if TYPE_CHECKING:
     from main_window import MainWindow
@@ -108,7 +108,8 @@ class StopConditionsPage(QWidget):
         self.edit_stop_exec_count = QLineEdit("5")
         self.edit_stop_exec_count.setFixedWidth(64)
         self.edit_stop_exec_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.edit_stop_exec_count.setValidator(QIntValidator(1, 99999))
+        self.edit_stop_exec_count.setValidator(DefaultIntValidator(1, 99999, 5, self))
+        self.edit_stop_exec_count.editingFinished.connect(self.validate_inputs)
         self.edit_stop_exec_count.setStyleSheet(f"""
             QLineEdit {{ background: white; border: 1px solid {CLR_CARD_BORDER};
                 border-radius: 6px; padding: 4px 6px; font-size: 12px; color: {CLR_TEXT_MAIN}; }}
@@ -138,7 +139,8 @@ class StopConditionsPage(QWidget):
         self.edit_stop_run_minutes = QLineEdit("10")
         self.edit_stop_run_minutes.setFixedWidth(64)
         self.edit_stop_run_minutes.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.edit_stop_run_minutes.setValidator(QIntValidator(1, 99999))
+        self.edit_stop_run_minutes.setValidator(DefaultIntValidator(1, 99999, 10, self))
+        self.edit_stop_run_minutes.editingFinished.connect(self.validate_inputs)
         self.edit_stop_run_minutes.setStyleSheet(f"""
             QLineEdit {{ background: white; border: 1px solid {CLR_CARD_BORDER};
                 border-radius: 6px; padding: 4px 6px; font-size: 12px; color: {CLR_TEXT_MAIN}; }}
@@ -254,7 +256,8 @@ class StopConditionsPage(QWidget):
         self.edit_stop_idle_minutes = QLineEdit("5")
         self.edit_stop_idle_minutes.setFixedWidth(64)
         self.edit_stop_idle_minutes.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.edit_stop_idle_minutes.setValidator(QIntValidator(1, 99999))
+        self.edit_stop_idle_minutes.setValidator(DefaultIntValidator(1, 99999, 5, self))
+        self.edit_stop_idle_minutes.editingFinished.connect(self.validate_inputs)
         self.edit_stop_idle_minutes.setStyleSheet(f"""
             QLineEdit {{ background: white; border: 1px solid {CLR_CARD_BORDER};
                 border-radius: 6px; padding: 4px 6px; font-size: 12px; color: {CLR_TEXT_MAIN}; }}
@@ -284,4 +287,11 @@ class StopConditionsPage(QWidget):
     def set_controls_enabled(self, enabled: bool) -> None:
         """运行期控件锁定与解锁 (BUG-09). 仅禁用容器内输入项，外部 QScrollArea 保持 enabled，滚动条/滚轮依然可用."""
         self.container.setEnabled(enabled)
+
+    def validate_inputs(self) -> None:
+        """停止条件页 3 个数值输入框强制校验回填 (FEAT-06)."""
+        for edit in (self.edit_stop_exec_count, self.edit_stop_run_minutes, self.edit_stop_idle_minutes):
+            if edit is not None and edit.validator():
+                edit.setText(edit.validator().fixup(edit.text()))
+
 

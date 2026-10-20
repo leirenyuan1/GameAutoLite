@@ -262,34 +262,81 @@ class MainWindow(QMainWindow):
             f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
         )
 
-    # ---- 选区准备与恢复 (BUG-01, BUG-02, BUG-03) ----
+    # ---- 选区准备与恢复 (BUG-01, BUG-02, BUG-03, DWM 零残影瞬时隐藏) ----
+
+    @staticmethod
+    def _set_dwm_transitions_disabled(widget: QWidget, disabled: bool) -> None:
+        """通过 Windows DWM API 启用/禁用窗口过渡动画，彻底消除 hide/minimize 时的渐隐残影."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            hwnd = int(widget.winId())
+            DWMWA_TRANSITIONS_FORCEDISABLED = 3
+            val = ctypes.c_int(1 if disabled else 0)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, ctypes.byref(val), ctypes.sizeof(val)
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _flush_dwm() -> None:
+        """等待 Windows DWM 完成当前桌面合成帧刷新（约 7~16ms），确保窗口像素已从屏幕彻底抹除."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            ctypes.windll.dwmapi.DwmFlush()
+        except Exception:
+            pass
 
     def prepare_selection_mode(self) -> dict:
-        """选区开始前隐藏主窗口与悬浮窗，记录完整几何与最大化状态."""
+        """选区开始前瞬时隐藏主窗口与悬浮窗（禁用 DWM 渐隐动画 + Alpha 归零 + DwmFlush 帧同步）."""
+        for c in self._task_cards:
+            if hasattr(c, "close_highlight_overlay"):
+                c.close_highlight_overlay()
         state = {
             "geom": self.geometry(),
             "was_maximized": self.isMaximized(),
             "floating_was_visible": bool(self._floating_widget and self._floating_widget.isVisible())
         }
         self._suppress_floating = True
-        if state["floating_was_visible"]:
+
+        # 1. 瞬时隐藏悬浮窗（禁用过渡动画 + 透明度归零 + hide）
+        if state["floating_was_visible"] and self._floating_widget:
+            self._set_dwm_transitions_disabled(self._floating_widget, True)
+            self._floating_widget.setWindowOpacity(0.0)
             self._floating_widget.hide()
+
+        # 2. 瞬时隐藏主窗口（禁用过渡动画 + 透明度归零 + hide）
         if self.isVisible():
-            self.showMinimized()
+            self._set_dwm_transitions_disabled(self, True)
+            self.setWindowOpacity(0.0)
+            self.hide()
             QApplication.processEvents()
-            time.sleep(0.05)
+            # 等待 DWM 提交完当前无窗口合成帧（替代盲等 sleep，极速且 100% 无残影）
+            self._flush_dwm()
+            time.sleep(0.02)
         return state
 
     def restore_after_selection(self, state: dict) -> None:
-        """选区完成后精准恢复主窗口（含最大化支持）与悬浮窗."""
+        """选区完成后精准恢复主窗口（含最大化支持）、DWM 动画属性与悬浮窗."""
         self._suppress_floating = False
+        self.setWindowOpacity(1.0)
         if state.get("was_maximized"):
             self.showMaximized()
         else:
             self.showNormal()  # 必须先 showNormal() 再 setGeometry()，确保 Windows DWM 布局生效
             if state.get("geom"):
                 self.setGeometry(state["geom"])
+        self._set_dwm_transitions_disabled(self, False)
+        self.raise_()
+        self.activateWindow()
         if state.get("floating_was_visible") and self.chk_always_floating.isChecked():
+            if self._floating_widget:
+                self._set_dwm_transitions_disabled(self._floating_widget, False)
+                self._floating_widget.setWindowOpacity(1.0)
             self._sync_and_show_floating()
 
     def _on_stop_img_capture(self) -> None:
@@ -298,18 +345,21 @@ class MainWindow(QMainWindow):
         state = main_win.prepare_selection_mode() if main_win else None
         img = None
         try:
-            result = overlay_selector.get_region()
+            result, cropped = overlay_selector.get_region_with_image(prompt="拖拽鼠标划定停止条件识别图, 按 Esc 取消")
             if result is not None:
-                QApplication.processEvents()
-                time.sleep(0.05)
-                x, y, w, h = result
-                try:
-                    with mss.mss() as sct:
-                        monitor = {"top": y, "left": x, "width": w, "height": h}
-                        sct_img = sct.grab(monitor)
-                        img = np.ascontiguousarray(np.array(sct_img)[:, :, :3])
-                except Exception as e:
-                    logger.error(f"截图捕获失败: {e}")
+                if cropped is not None:
+                    img = cropped
+                else:
+                    QApplication.processEvents()
+                    time.sleep(0.05)
+                    x, y, w, h = result
+                    try:
+                        with mss.mss() as sct:
+                            monitor = {"top": y, "left": x, "width": w, "height": h}
+                            sct_img = sct.grab(monitor)
+                            img = np.ascontiguousarray(np.array(sct_img)[:, :, :3])
+                    except Exception as e:
+                        logger.error(f"截图捕获失败: {e}")
         finally:
             if main_win and state:
                 main_win.restore_after_selection(state)
@@ -734,15 +784,21 @@ class MainWindow(QMainWindow):
         self._global_settings["hotkeys"] = hotkeys
 
     def _on_top_toggled(self, checked: bool) -> None:
-        """切换窗口置顶状态."""
+        """切换窗口置顶状态（保留可见性与最大化状态）."""
+        was_vis = self.isVisible()
+        was_max = self.isMaximized()
         geom = self.geometry()
         flags = self.windowFlags()
         if checked:
             self.setWindowFlags(flags | Qt.WindowType.WindowStaysOnTopHint)
         else:
             self.setWindowFlags(flags & ~Qt.WindowType.WindowStaysOnTopHint)
-        self.setGeometry(geom)
-        self.show()
+        if was_vis:
+            if was_max:
+                self.showMaximized()
+            else:
+                self.showNormal()  # 遵循项目既有顺序：先 showNormal 再 setGeometry
+                self.setGeometry(geom)
 
     # ---- 引擎启停 ----
 
@@ -763,12 +819,23 @@ class MainWindow(QMainWindow):
             self.sidebar.status_line1.setText("引擎正在退出")
             logger.warning("旧引擎线程尚未退出，拒绝启动新引擎")
             return
-        # 启动前同步所有设置到 _global_settings
-        self._sync_settings_to_global()
 
-        # 启动前预先触发表单失焦校验，确保未回车或未失焦的改名完整提交
+        # 启动前立即清空上一轮遗留的停止原因与提示（PRE-03）
+        self._stop_reason = ""
+        for w in (
+            self.sidebar.status_line1, self.sidebar.status_icon1,
+            self.sidebar.status_line2, self.sidebar.status_icon2,
+            self.sidebar.status_line3, self.sidebar.status_icon3,
+        ):
+            w.setToolTip("")
+
+        # 启动前预先触发表单失焦校验与停止条件下拉框刷新，确保同步前数据一致 (FIX-02)
         for card in self._task_cards:
             card._validate_name()
+        self._refresh_stop_task_combo()
+
+        # 启动前同步所有设置到 _global_settings
+        self._sync_settings_to_global()
 
         # 校验名称：检查是否有重复或空名称
         name_count: dict[str, list] = {}
@@ -799,12 +866,32 @@ class MainWindow(QMainWindow):
         # 收集所有配置完整的任务
         configs = self._collect_task_configs()
         if not configs:
-            self.sidebar.status_line1.setText("无可用任务")
-            self._set_sidebar_icon(1, "alert-triangle", CLR_STATUS_ERR)
-            self.sidebar.status_line2.setText("需设置图片")
-            self._set_sidebar_icon(2, "mouse", CLR_TEXT_SUB)
-            self.sidebar.status_line3.setText("和点击区域")
-            self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
+            all_configured_without_chk = []
+            for card in self._task_cards:
+                has_image = bool(card._image_path and os.path.exists(card._image_path))
+                if card._click_on_match:
+                    cfg_ok = has_image
+                elif card._multi_region:
+                    cfg_ok = has_image and len(card._regions) > 0
+                else:
+                    cfg_ok = has_image and card._region is not None
+                if cfg_ok:
+                    all_configured_without_chk.append(card)
+
+            if all_configured_without_chk and all(not c.chk_enabled.isChecked() for c in all_configured_without_chk):
+                self.sidebar.status_line1.setText("无启用任务")
+                self._set_sidebar_icon(1, "alert-triangle", CLR_STATUS_ERR)
+                self.sidebar.status_line2.setText("请至少勾选")
+                self._set_sidebar_icon(2, "mouse", CLR_TEXT_SUB)
+                self.sidebar.status_line3.setText("一个任务")
+                self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
+            else:
+                self.sidebar.status_line1.setText("无可用任务")
+                self._set_sidebar_icon(1, "alert-triangle", CLR_STATUS_ERR)
+                self.sidebar.status_line2.setText("需设置图片")
+                self._set_sidebar_icon(2, "mouse", CLR_TEXT_SUB)
+                self.sidebar.status_line3.setText("和点击区域")
+                self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
             # 同步到悬浮窗
             if self._floating_widget and self._floating_widget.isVisible():
                 self._floating_widget.sync_from_sidebar(self.sidebar)
@@ -814,8 +901,6 @@ class MainWindow(QMainWindow):
         # ---- 停止条件处理 ----
         self._stop_by_condition = False
         self._manual_stop = False
-        self._refresh_stop_task_combo()
-        self._sync_settings_to_global()
         stop_conditions = self._global_settings.get("stop_conditions", {"enabled": False})
 
         # 警告 tooltip 无条件预清理（P2-6 / R5）
@@ -840,13 +925,10 @@ class MainWindow(QMainWindow):
                 logger.warning(f"停止条件警告: {'; '.join(warnings)}")
 
         self._save_config()  # 参数校验全部通过后自动存盘 (BUG-09)
-        self._stop_reason = ""
-        for w in (
-            self.sidebar.status_line1, self.sidebar.status_icon1,
-            self.sidebar.status_line2, self.sidebar.status_icon2,
-            self.sidebar.status_line3, self.sidebar.status_icon3,
-        ):
-            w.setToolTip("")
+        # 启动前安全清理所有卡片上的测试高亮浮窗
+        for c in self._task_cards:
+            if hasattr(c, "close_highlight_overlay"):
+                c.close_highlight_overlay()
         self._set_engine_controls_locked(True)  # 启动前统一锁定卡片与条件页 (BUG-09)
 
         self._engine = EngineThread(
@@ -864,9 +946,20 @@ class MainWindow(QMainWindow):
             self._engine.task_triggered.connect(self._dashboard_page.on_task_triggered)
             self._engine.stats_updated.connect(self._on_engine_stats_updated)
             self._dashboard_page.on_engine_started()
-        self._engine.start()
 
+        # 主线程同步重置侧边栏 3 行状态文本与图标（消除首帧跳变 FIX-02）
+        self.sidebar.status_line1.setText("运行中")
+        self._set_sidebar_icon(1, "zap", CLR_BTN_SUCCESS)
+        self.sidebar.status_line2.setText("监测中...")
+        self._set_sidebar_icon(2, "search", CLR_TEXT_SUB)
+        self.sidebar.status_line3.setText("—")
+        self._set_sidebar_icon(3, "timer", CLR_TEXT_SUB)
         self.sidebar.set_engine_running(True)
+        if self._floating_widget and self._floating_widget.isVisible():
+            self._floating_widget.sync_from_sidebar(self.sidebar)
+        self._update_remote_status_cache()
+
+        self._engine.start()
 
         if self.chk_auto_minimize.isChecked():
             self._auto_minimized = True
@@ -1010,7 +1103,12 @@ class MainWindow(QMainWindow):
             n += 1
         return f"任务{n}"
 
-    def _add_task(self, data: dict | None = None, refresh_combo: bool = True) -> None:
+    def _add_task(
+        self,
+        data: dict | None = None,
+        refresh_combo: bool = True,
+        insert_index: int | None = None,
+    ) -> CollapsibleTaskCard:
         card = CollapsibleTaskCard()
         if data:
             card.from_dict(data)
@@ -1023,26 +1121,80 @@ class MainWindow(QMainWindow):
         card.removed.connect(self._remove_task)
         card.moved_up.connect(self._move_task_up)
         card.moved_down.connect(self._move_task_down)
-        self._task_cards.append(card)
-        # 插入到 btn_add 之前(或 stretch 之前, 如果 btn_add 还未添加)
-        insert_pos = self._card_layout.indexOf(self.btn_add)
-        if insert_pos < 0:
-            insert_pos = self._card_layout.count() - 1
-        self._card_layout.insertWidget(insert_pos, card)
+        card.copy_requested.connect(self._duplicate_task)
+
+        if insert_index is not None and 0 <= insert_index <= len(self._task_cards):
+            self._task_cards.insert(insert_index, card)
+            self._card_layout.insertWidget(insert_index, card)
+        else:
+            self._task_cards.append(card)
+            # 插入到 btn_add 之前(或 stretch 之前, 如果 btn_add 还未添加)
+            insert_pos = self._card_layout.indexOf(self.btn_add)
+            if insert_pos < 0:
+                insert_pos = self._card_layout.count() - 1
+            self._card_layout.insertWidget(insert_pos, card)
+
         self._refresh_move_buttons()
         if refresh_combo:
             self._refresh_stop_task_combo()
         # 启动后检查图片是否存在
         if card._image_path:
             card.check_image_exists()
+        return card
+
+    def _duplicate_task(self, card: CollapsibleTaskCard) -> None:
+        """一键复制任务卡片 (FEAT-03)."""
+        if (self.sidebar.is_running() or self._moveAnimating
+                or any(getattr(c, "_is_deleting", False) for c in self._card_container.findChildren(CollapsibleTaskCard))
+                or card not in self._task_cards):
+            return
+        card._validate_name()
+        import copy
+        import re
+        data = copy.deepcopy(card.to_dict())
+        raw_name = data.get("name", "任务").strip() or "任务"
+        base_name = re.sub(r"\(\d+\)$", "", raw_name).strip() or "任务"
+        existing = {c.name_edit.text().strip() for c in self._task_cards}
+        n = 2
+        new_name = f"{base_name}({n})"
+        while new_name in existing:
+            n += 1
+            new_name = f"{base_name}({n})"
+        data["name"] = new_name
+
+        try:
+            idx = self._task_cards.index(card)
+            insert_idx = idx + 1
+        except ValueError:
+            insert_idx = len(self._task_cards)
+
+        new_card = self._add_task(data, refresh_combo=True, insert_index=insert_idx)
+        new_card.set_collapsed(not card._expanded)
+        if hasattr(self, "_scroll") and self._scroll:
+            QTimer.singleShot(
+                50,
+                lambda: self._scroll.ensureWidgetVisible(new_card) if new_card in self._task_cards else None,
+            )
 
     def _remove_task(self, card: CollapsibleTaskCard) -> None:
         """带动画删除卡片."""
         if card not in self._task_cards:
             return
+        if hasattr(card, "close_highlight_overlay"):
+            card.close_highlight_overlay()
+        elif hasattr(card, "_active_overlay") and card._active_overlay:
+            try:
+                card._active_overlay.close()
+            except Exception:
+                pass
+            card._active_overlay = None
         card.btn_up.setEnabled(False)
         card.btn_down.setEnabled(False)
         card.btn_delete.setEnabled(False)
+        if hasattr(card, "btn_copy"):
+            card.btn_copy.setEnabled(False)
+        if hasattr(card, "chk_enabled"):
+            card.chk_enabled.setEnabled(False)
         self._task_cards.remove(card)
         card._is_deleting = True
         self._refresh_move_buttons()
@@ -1089,6 +1241,8 @@ class MainWindow(QMainWindow):
     def _clear_tasks_no_anim(self) -> None:
         """清空所有任务卡片（无动画，用于导入替换）."""
         for card in self._task_cards:
+            if hasattr(card, "close_highlight_overlay"):
+                card.close_highlight_overlay()
             self._card_layout.removeWidget(card)
             card.deleteLater()
         self._task_cards.clear()
@@ -1115,11 +1269,15 @@ class MainWindow(QMainWindow):
         if self._moveAnimating or any(getattr(c, "_is_deleting", False) for c in self._card_container.findChildren(CollapsibleTaskCard)):
             return
         self._moveAnimating = True
-        # 1. 禁用所有移动按钮 + 删除按钮
+        # 1. 禁用所有移动按钮 + 删除按钮 + 复制按钮 + 启用复选框
         for c in self._task_cards:
             c.btn_up.setEnabled(False)
             c.btn_down.setEnabled(False)
             c.btn_delete.setEnabled(False)
+            if hasattr(c, "btn_copy"):
+                c.btn_copy.setEnabled(False)
+            if hasattr(c, "chk_enabled"):
+                c.chk_enabled.setEnabled(False)
         # 2. 记录旧位置
         old_pos = card.pos()
         # 3. 交换列表
@@ -1154,6 +1312,10 @@ class MainWindow(QMainWindow):
                 self._refresh_move_buttons()
                 for c in self._task_cards:
                     c.btn_delete.setEnabled(not self.sidebar.is_running())
+                    if hasattr(c, "btn_copy"):
+                        c.btn_copy.setEnabled(not self.sidebar.is_running())
+                    if hasattr(c, "chk_enabled"):
+                        c.chk_enabled.setEnabled(not self.sidebar.is_running())
                 self._scroll.ensureWidgetVisible(card)
 
             anim.finished.connect(on_done)
@@ -1164,6 +1326,10 @@ class MainWindow(QMainWindow):
             self._refresh_move_buttons()
             for c in self._task_cards:
                 c.btn_delete.setEnabled(not self.sidebar.is_running())
+                if hasattr(c, "btn_copy"):
+                    c.btn_copy.setEnabled(not self.sidebar.is_running())
+                if hasattr(c, "chk_enabled"):
+                    c.chk_enabled.setEnabled(not self.sidebar.is_running())
             self._scroll.ensureWidgetVisible(card)
 
     def _reorder_all_cards(self) -> None:
@@ -1200,6 +1366,10 @@ class MainWindow(QMainWindow):
 
     def _sync_settings_to_global(self) -> None:
         """同步所有 UI 控件的当前值到 _global_settings."""
+        if hasattr(self, "_settings_page") and hasattr(self._settings_page, "validate_inputs"):
+            self._settings_page.validate_inputs()
+        if hasattr(self, "_stop_conditions_page") and hasattr(self._stop_conditions_page, "validate_inputs"):
+            self._stop_conditions_page.validate_inputs()
         try:
             self._global_settings["scan_interval"] = int(self.edit_scan_interval.text() or "200")
         except ValueError:
@@ -1371,9 +1541,12 @@ class MainWindow(QMainWindow):
 
         # 导入新任务（智能检测图片）
         for item in tasks_data:
+            if not isinstance(item, dict):
+                continue
             restore_task_image(item)
             # 名称去重
-            name = item.get("name", "").strip()
+            raw_name = item.get("name")
+            name = raw_name.strip() if isinstance(raw_name, str) else ""
             if not name:
                 item["name"] = self._next_task_name()
             else:
@@ -1422,14 +1595,14 @@ class MainWindow(QMainWindow):
                 self.chk_stop_enabled.setChecked(sc.get("enabled", False))
                 self.chk_stop_enabled.blockSignals(False)
 
-                tc = sc.get("task_exec_count", {})
+                tc = sc.get("task_exec_count") or {}
                 self.chk_stop_cond1.blockSignals(True)
                 self.chk_stop_cond1.setChecked(tc.get("enabled", False))
                 self.chk_stop_cond1.blockSignals(False)
-                self.edit_stop_exec_count.setText(str(tc.get("count", 5)))
+                self.edit_stop_exec_count.setText(str(tc.get("count") or 5))
 
                 # 恢复目标任务下拉框（导入时任务已加入 _task_cards，无需 pending 机制）
-                task_name = tc.get("task_name", "")
+                task_name = tc.get("task_name") or ""
                 if task_name:
                     idx = self.combo_stop_task.findText(task_name)
                     if idx >= 0:
@@ -1438,23 +1611,23 @@ class MainWindow(QMainWindow):
                         self.chk_stop_cond1.setChecked(False)
                         logger.warning(f"导入方案的停止条件引用了不存在的任务「{task_name}」，已取消条件一勾选")
 
-                rl = sc.get("run_time_limit", {})
+                rl = sc.get("run_time_limit") or {}
                 self.chk_stop_cond2.blockSignals(True)
                 self.chk_stop_cond2.setChecked(rl.get("enabled", False))
                 self.chk_stop_cond2.blockSignals(False)
-                self.edit_stop_run_minutes.setText(str(rl.get("minutes", 10)))
+                self.edit_stop_run_minutes.setText(str(rl.get("minutes") or 10))
 
-                ims = sc.get("image_match_stop", {})
+                ims = sc.get("image_match_stop") or {}
                 self.chk_stop_cond3.blockSignals(True)
                 self.chk_stop_cond3.setChecked(ims.get("enabled", False))
                 self.chk_stop_cond3.blockSignals(False)
-                self.slider_stop_threshold.setValue(ims.get("threshold", 90))
+                self.slider_stop_threshold.setValue(ims.get("threshold") or 90)
 
-                nmt = sc.get("no_match_timeout", {})
+                nmt = sc.get("no_match_timeout") or {}
                 self.chk_stop_cond4.blockSignals(True)
                 self.chk_stop_cond4.setChecked(nmt.get("enabled", False))
                 self.chk_stop_cond4.blockSignals(False)
-                self.edit_stop_idle_minutes.setText(str(nmt.get("minutes", 5)))
+                self.edit_stop_idle_minutes.setText(str(nmt.get("minutes") or 5))
 
                 self._on_stop_enabled_toggled(self.chk_stop_enabled.isChecked())
 
@@ -1485,18 +1658,32 @@ class MainWindow(QMainWindow):
             self._add_task()
             return
         if isinstance(data, dict):
-                saved = data.get("settings", {})
+                saved = data.get("settings") or {}
                 self._global_settings.update(saved)
-                raw_history = self._global_settings.get("stats_history")
+                raw_history = self._global_settings.get("stats_history") or data.get("stats_history")
                 if hasattr(self, "_dashboard_page"):
                     self._dashboard_page.load_stats_history(raw_history)
 
-                # 兼容旧配置：f8_enabled → hotkeys 迁移
-                if "hotkeys" not in self._global_settings:
+                # 兼容旧配置与不同格式：f8_enabled / 字典格式 / 字符串列表 → hotkeys 统一迁移
+                raw_hotkeys = self._global_settings.get("hotkeys")
+                if not raw_hotkeys:
                     if self._global_settings.get("f8_enabled", True):
                         self._global_settings["hotkeys"] = [{"key": "f8", "enabled": True}]
                     else:
                         self._global_settings["hotkeys"] = []
+                elif isinstance(raw_hotkeys, dict):
+                    self._global_settings["hotkeys"] = [{"key": str(v), "enabled": True} for v in raw_hotkeys.values() if v]
+                elif isinstance(raw_hotkeys, list):
+                    norm_h = []
+                    for h in raw_hotkeys:
+                        if isinstance(h, dict) and isinstance(h.get("key"), str) and h["key"].strip():
+                            norm_h.append({"key": h["key"].strip(), "enabled": bool(h.get("enabled", True))})
+                        elif isinstance(h, str) and h.strip():
+                            norm_h.append({"key": h.strip(), "enabled": True})
+                    self._global_settings["hotkeys"] = norm_h
+                else:
+                    self._global_settings["hotkeys"] = [{"key": "f8", "enabled": True}]
+
                 # 设置 hotkeys_enabled 默认值
                 if "hotkeys_enabled" not in self._global_settings:
                     self._global_settings["hotkeys_enabled"] = True
@@ -1533,9 +1720,13 @@ class MainWindow(QMainWindow):
                 self.chk_floating.blockSignals(False)
 
                 self.slider_opacity.blockSignals(True)
-                opacity_value = self._global_settings.get("floating_opacity", 100)
+                raw_opacity = self._global_settings.get("floating_opacity")
+                try:
+                    opacity_value = 100 if raw_opacity is None else int(raw_opacity)
+                except (ValueError, TypeError):
+                    opacity_value = 100
                 self.slider_opacity.setValue(opacity_value)
-                self.label_opacity.setText(f"{opacity_value}%")  # 手动更新标签
+                self.label_opacity.setText(f"{self.slider_opacity.value()}%")  # 使用滑块钳制后的真实值
                 self.slider_opacity.blockSignals(False)
 
                 self.chk_floating_disabled.blockSignals(True)
@@ -1579,10 +1770,13 @@ class MainWindow(QMainWindow):
                 if always_on:
                     self._sync_and_show_floating()
 
-                # 同步 UI 控件 - 图像扫描间隔
-                self.edit_scan_interval.setText(
-                    str(self._global_settings.get("scan_interval", 200))
-                )
+                # 同步 UI 控件 - 图像扫描间隔（显式判断 is None，保留合法的 0ms 全速扫描配置）
+                raw_scan = self._global_settings.get("scan_interval")
+                try:
+                    scan_val = 200 if raw_scan is None else max(0, min(10000, int(raw_scan)))
+                except (ValueError, TypeError):
+                    scan_val = 200
+                self.edit_scan_interval.setText(str(scan_val))
 
                 # 同步 UI 控件 - 鼠标速度
                 speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
@@ -1594,23 +1788,23 @@ class MainWindow(QMainWindow):
                     self.combo_click_speed.setCurrentIndex(speed_options.index(click_speed))
 
                 # 恢复停止条件配置
-                sc = self._global_settings.get("stop_conditions", {})
+                sc = self._global_settings.get("stop_conditions") or {}
                 self.chk_stop_enabled.blockSignals(True)
                 self.chk_stop_enabled.setChecked(sc.get("enabled", False))
                 self.chk_stop_enabled.blockSignals(False)
 
-                tc = sc.get("task_exec_count", {})
+                tc = sc.get("task_exec_count") or {}
                 self._pending_stop_cond1_enabled = tc.get("enabled", False)
-                self.edit_stop_exec_count.setText(str(tc.get("count", 5)))
+                self.edit_stop_exec_count.setText(str(tc.get("count") or 5))
                 self._pending_stop_task_name = tc.get("task_name", "")
 
-                rl = sc.get("run_time_limit", {})
+                rl = sc.get("run_time_limit") or {}
                 self.chk_stop_cond2.blockSignals(True)
                 self.chk_stop_cond2.setChecked(rl.get("enabled", False))
                 self.chk_stop_cond2.blockSignals(False)
-                self.edit_stop_run_minutes.setText(str(rl.get("minutes", 10)))
+                self.edit_stop_run_minutes.setText(str(rl.get("minutes") or 10))
 
-                ims = sc.get("image_match_stop", {})
+                ims = sc.get("image_match_stop") or {}
                 self.chk_stop_cond3.blockSignals(True)
                 self.chk_stop_cond3.setChecked(ims.get("enabled", False))
                 self.chk_stop_cond3.blockSignals(False)
@@ -1632,33 +1826,38 @@ class MainWindow(QMainWindow):
                     self._stop_image_path = None
                     self.stop_img_preview.setText("图片已丢失")
                     self.chk_stop_cond3.setChecked(False)
-                self.slider_stop_threshold.setValue(ims.get("threshold", 90))
+                self.slider_stop_threshold.setValue(ims.get("threshold") or 90)
 
-                nmt = sc.get("no_match_timeout", {})
+                nmt = sc.get("no_match_timeout") or {}
                 self.chk_stop_cond4.blockSignals(True)
                 self.chk_stop_cond4.setChecked(nmt.get("enabled", False))
                 self.chk_stop_cond4.blockSignals(False)
-                self.edit_stop_idle_minutes.setText(str(nmt.get("minutes", 5)))
+                self.edit_stop_idle_minutes.setText(str(nmt.get("minutes") or 5))
 
                 self._on_stop_enabled_toggled(self.chk_stop_enabled.isChecked())
 
-                tasks_raw = data.get("tasks", [])
+                tasks_raw = data.get("tasks") or []
                 if not isinstance(tasks_raw, list):
                     logger.error("config.json 中 tasks 字段格式不正确，已忽略任务列表")
                     tasks_raw = []
                 for item in tasks_raw:
-                    # 补全空名称
-                    if not item.get("name", "").strip():
+                    if not isinstance(item, dict):
+                        continue
+                    # 补全空名称（安全防守 name 值为 None 时 strip() 触发 AttributeError）
+                    name_val = item.get("name")
+                    if not isinstance(name_val, str) or not name_val.strip():
                         item["name"] = self._next_task_name()
                     # 去重：与已加载的卡片名称冲突时自动加后缀
                     else:
                         existing = {c.name_edit.text().strip() for c in self._task_cards}
-                        name = item["name"].strip()
+                        name = name_val.strip()
                         if name in existing:
                             n = 2
                             while f"{name}({n})" in existing:
                                 n += 1
                             item["name"] = f"{name}({n})"
+                        else:
+                            item["name"] = name
                     self._add_task(item, refresh_combo=False)
 
                 # 末尾统一刷新停止条件 combo
@@ -1684,6 +1883,10 @@ class MainWindow(QMainWindow):
         self._hotkey_mgr.unregister_all()
         # 提前设置，防止 changeEvent 触发 fade_hide
         self._suppress_floating = True
+        # 关闭所有卡片的高亮悬浮窗，防止主窗销毁后浮窗孤立存活 (Bug-08)
+        for card in self._task_cards:
+            if hasattr(card, "close_highlight_overlay"):
+                card.close_highlight_overlay()
         if self._engine and self._engine.isRunning():
             for sig in (
                 self._engine.status_update,
@@ -1725,6 +1928,8 @@ class MainWindow(QMainWindow):
             self._floating_widget.close()
             self._floating_widget = None
         self._save_config()
+        import image_engine
+        image_engine.close_thread_sct()
         super().closeEvent(event)
 
 

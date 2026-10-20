@@ -83,7 +83,7 @@ _MODIFIERS = {"ctrl", "shift", "alt", "win"}
 class HotkeyCaptureDialog(QDialog):
     """快捷键捕获对话框。"""
 
-    def __init__(self, existing_keys: list[str], parent=None):
+    def __init__(self, existing_keys: list[str] | None = None, parent=None):
         """
         :param existing_keys: 已存在的快捷键列表（用于重复检测）
         :param parent: 父窗口
@@ -91,9 +91,10 @@ class HotkeyCaptureDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("捕获快捷键")
         self.setFixedSize(320, 160)
-        self._existing_keys = [k.lower() for k in existing_keys]
+        self._existing_keys = [k.lower() for k in (existing_keys or []) if isinstance(k, str)]
         self._captured_keys: set[str] = set()
         self._hotkey_string: str = ""
+        self._releasing_combo: bool = False
 
         layout = QVBoxLayout(self)
 
@@ -126,23 +127,33 @@ class HotkeyCaptureDialog(QDialog):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.isAutoRepeat():
+            return
         key = self._translate_key(event)
         if not key:
             return
         if key == "escape":
             self.reject()
             return
+        self._releasing_combo = False
         self._captured_keys.add(key)
+        if not self._is_modifier(key):
+            self._lock_hotkey()  # 按下非修饰主键时立即锁定最新组合
         self._label_error.setText("")
         self._refresh_capture_state()
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.isAutoRepeat():
+            return
         key = self._translate_key(event)
         if not key:
             return
         if not self._is_modifier(key):
-            self._lock_hotkey()  # 非修饰键松开时锁定
+            self._lock_hotkey()
+            self._releasing_combo = True  # 标记刚松开主键、正在抬起修饰键的过程中
         self._captured_keys.discard(key)
+        if not self._captured_keys:
+            self._releasing_combo = False
         self._refresh_capture_state()
 
     def _translate_key(self, event: QKeyEvent) -> str | None:
@@ -161,11 +172,16 @@ class HotkeyCaptureDialog(QDialog):
         return key.lower() in _MODIFIERS
 
     def _refresh_capture_state(self) -> None:
-        """闭环状态机：根据当前剩余按下集合与锁定状态统一更新 UI (BUG-17)."""
+        """闭环状态机：兼顾组合键抬手防闪灰 (PRE-05) 与单按修饰键松开恢复原值 (BUG-17)."""
+        has_non_mod = any(not self._is_modifier(k) for k in self._captured_keys)
         if self._captured_keys:
-            parts = sorted(self._captured_keys, key=lambda k: (k not in _MODIFIERS, k))
-            self._label_display.setText("+".join(parts).upper())
-            self._btn_confirm.setEnabled(any(not self._is_modifier(k) for k in self._captured_keys))
+            if not has_non_mod and self._releasing_combo and self._hotkey_string:
+                self._label_display.setText(self._hotkey_string.upper())
+                self._btn_confirm.setEnabled(True)
+            else:
+                parts = sorted(self._captured_keys, key=lambda k: (k not in _MODIFIERS, k))
+                self._label_display.setText("+".join(parts).upper())
+                self._btn_confirm.setEnabled(has_non_mod)
         elif self._hotkey_string:
             self._label_display.setText(self._hotkey_string.upper())
             self._btn_confirm.setEnabled(True)
@@ -183,12 +199,9 @@ class HotkeyCaptureDialog(QDialog):
 
     def _on_confirm(self) -> None:
         """点击确定时校验。"""
-        # 防御性检查：正常情况下按钮已被禁用，但用户可能按住修饰键不松手
-        # 此时 _captured_keys 非空导致按钮启用，但 _hotkey_string 仍为空
-        if not self._hotkey_string:
-            self._show_error("请输入有效的按键组合")
-            return
-        if self._is_only_modifiers(self._hotkey_string):
+        if self._captured_keys and any(not self._is_modifier(k) for k in self._captured_keys):
+            self._lock_hotkey()
+        if not self._hotkey_string or self._is_only_modifiers(self._hotkey_string):
             self._show_error("请输入有效的按键组合")
             return
         if self._hotkey_string.lower() in self._existing_keys:
