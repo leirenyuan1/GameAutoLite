@@ -314,6 +314,7 @@ class ClickScatterDialog(QDialog):
         self.setWindowTitle("屏幕点击分布高清大图")
         self.resize(850, 550)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setMouseTracking(True)
         self.setStyleSheet(f"background: {CLR_CONTENT_BG};")

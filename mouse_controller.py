@@ -10,16 +10,34 @@
   3. 拆分为 mouseDown + 随机停留 + mouseUp 的真实点击
 """
 
+from contextlib import contextmanager
+import ctypes
 import logging
+import math
 import random
 import time
-import math
 
 import win32api
 import win32con
 
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _high_res_timer():
+    """临时开启 Windows 1ms 高精度多媒体定时器，确保贝塞尔采样帧率跑满不跳帧."""
+    try:
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        try:
+            ctypes.windll.winmm.timeEndPeriod(1)
+        except Exception:
+            pass
 
 
 def _real_click(speed: float = 1.0) -> bool:
@@ -34,7 +52,7 @@ def _real_click(speed: float = 1.0) -> bool:
     try:
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
         try:
-            time.sleep(random.uniform(0.05, 0.15) / speed)
+            time.sleep(random.uniform(0.05, 0.15) / max(0.1, float(speed)))
         finally:
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
         return True
@@ -62,21 +80,23 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
     dist = math.hypot(tx - sx, ty - sy)
 
     # 按距离动态分配总耗时, speed 越大越快
+    safe_speed = max(0.1, float(speed))
     if dist < 200:
-        total_time = random.uniform(0.15, 0.3) / speed
+        total_time = random.uniform(0.15, 0.3) / safe_speed
     else:
-        total_time = random.uniform(0.4, 0.65) / speed
+        total_time = random.uniform(0.4, 0.65) / safe_speed
 
     # 采样点数: 60~80 个
     num_samples = random.randint(60, 80)
 
-    # 生成 3 个随机控制点, 在起点和终点连线的等分点附近随机偏移 ±120px
+    # 生成 3 个随机控制点, 在起点和终点连线的等分点附近动态偏移
+    max_offset = max(2, min(120, int(dist * 0.35)))
     control_points = []
     for i in range(1, 4):  # i = 1, 2, 3
         base_x = sx + (tx - sx) * i / 4
         base_y = sy + (ty - sy) * i / 4
-        cp_x = int(base_x + random.randint(-120, 120))
-        cp_y = int(base_y + random.randint(-120, 120))
+        cp_x = int(base_x + random.randint(-max_offset, max_offset))
+        cp_y = int(base_y + random.randint(-max_offset, max_offset))
         control_points.append((cp_x, cp_y))
 
     # 5 个控制点: P0(起点) + P1,P2,P3(随机) + P4(终点)
@@ -99,14 +119,15 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
         speed_factors.append(factor)
 
     total_speed = sum(speed_factors)
+    cum_times = []
+    acc = 0.0
+    for factor in speed_factors:
+        acc += factor
+        cum_times.append(acc / total_speed)
 
-    # 逐点移动
+    points = []
     for i in range(num_samples):
-        if stop_event and stop_event.is_set():
-            return False
-        t = i / (num_samples - 1) if num_samples > 1 else 0
-
-        # 四阶贝塞尔公式: B(t) = (1-t)^4*P0 + 4(1-t)^3*t*P1 + 6(1-t)^2*t^2*P2 + 4(1-t)*t^3*P3 + t^4*P4
+        t = i / (num_samples - 1) if num_samples > 1 else 1.0
         mt = 1 - t
         mt2 = mt * mt
         mt3 = mt2 * mt
@@ -127,15 +148,81 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
               t4 * P[4][1])
 
         # 中间采样点叠加 ±1~2px 随机抖动(首尾端点不抖)
-        if i > 0 and i < num_samples - 1:
+        if 0 < i < num_samples - 1:
             px += random.randint(-2, 2)
             py += random.randint(-2, 2)
+        points.append((int(px), int(py)))
 
-        # 本步耗时 = 总耗时 * (当前速度系数 / 总速度系数)
-        step_time = total_time * speed_factors[i] / total_speed
+    with _high_res_timer():
+        start_perf = time.perf_counter()
+        last_idx = -1
 
-        win32api.SetCursorPos((int(px), int(py)))
-        time.sleep(step_time)
+        while True:
+            if stop_event and stop_event.is_set():
+                return False
+            elapsed = time.perf_counter() - start_perf
+            if elapsed >= total_time:
+                break
+
+            idx = 0
+            for j in range(num_samples - 1):
+                if elapsed >= total_time * cum_times[j]:
+                    idx = j + 1
+                else:
+                    break
+
+            if idx != last_idx:
+                win32api.SetCursorPos(points[idx])
+                last_idx = idx
+                if idx >= num_samples - 1:
+                    break
+
+            next_target = total_time * cum_times[idx]
+            remain = next_target - (time.perf_counter() - start_perf)
+            if remain > 0:
+                wait_sec = min(0.002, remain)
+                if stop_event:
+                    if stop_event.wait(timeout=wait_sec):
+                        return False
+                else:
+                    time.sleep(wait_sec)
+
+        if stop_event and stop_event.is_set():
+            return False
+        win32api.SetCursorPos((int(tx), int(ty)))
+    return True
+
+
+def _micro_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
+    """连击微距平滑步进（用于双击/连击的第 2~N 次微偏移移动，含中间步微颤防直线特征与防大甩尾）."""
+    if stop_event and stop_event.is_set():
+        return False
+    try:
+        sx, sy = win32api.GetCursorPos()
+    except Exception as e:
+        logger.error(f"获取鼠标位置失败: {e}")
+        return False
+
+    steps = random.randint(2, 4)
+    total_time = random.uniform(0.015, 0.035) / max(0.1, float(speed))
+    step_wait = total_time / steps
+    with _high_res_timer():
+        for s in range(1, steps + 1):
+            if stop_event and stop_event.is_set():
+                return False
+            ratio = s / steps
+            nx = int(round(sx + (tx - sx) * ratio))
+            ny = int(round(sy + (ty - sy) * ratio))
+            if s < steps:
+                nx += random.choice([-1, 0, 1])
+                ny += random.choice([-1, 0, 1])
+            win32api.SetCursorPos((nx, ny))
+            if s < steps:
+                if stop_event:
+                    if stop_event.wait(timeout=max(0.0, step_wait)):
+                        return False
+                else:
+                    time.sleep(max(0.0, step_wait))
     return True
 
 
@@ -153,8 +240,8 @@ def click_in_region(
     """
     clicks: list[tuple[int, int, float, float]] = []
     # 第一步: 在区域内均匀随机取点(禁止取中心点)
-    tx = random.randint(x, x + w)
-    ty = random.randint(y, y + h)
+    tx = random.randint(x, x + max(0, w - 1))
+    ty = random.randint(y, y + max(0, h - 1))
 
     # 第二步: 贝塞尔曲线移动到目标点
     if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
@@ -174,6 +261,7 @@ def click_in_regions(
     move_speed: float = 1.0,
     click_speed: float = 1.0,
     stop_event=None,
+    count: int = 1,
 ) -> list[tuple[int, int, float, float]]:
     """
     从多个区域中按面积加权随机选一个, 再在其中随机取点点击.
@@ -181,21 +269,24 @@ def click_in_regions(
     若移动途中被 stop_event 打断, 则立即返回已记录的 clicks.
     返回 list[tuple[int, int, float, float]], 元素为 (tx, ty, norm_x, norm_y).
     """
-    clicks: list[tuple[int, int, float, float]] = []
     if not regions:
-        return clicks
-    weights = [w * h for _, _, w, h in regions]
+        return []
+    weights = [max(1, max(0, int(w)) * max(0, int(h))) for _, _, w, h in regions]
     x, y, w, h = random.choices(regions, weights=weights, k=1)[0]
-    tx = random.randint(x, x + w)
-    ty = random.randint(y, y + h)
-    if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
-        return clicks
-    if not _real_click(click_speed):
-        return clicks
-    norm_x = (tx - x) / max(1, w)
-    norm_y = (ty - y) / max(1, h)
-    clicks.append((tx, ty, float(norm_x), float(norm_y)))
-    return clicks
+    if count <= 1:
+        return click_in_region(
+            x, y, w, h,
+            move_speed=move_speed,
+            click_speed=click_speed,
+            stop_event=stop_event,
+        )
+    return click_in_region_multi(
+        x, y, w, h,
+        count=count,
+        move_speed=move_speed,
+        click_speed=click_speed,
+        stop_event=stop_event,
+    )
 
 
 def click_in_region_multi(
@@ -210,12 +301,12 @@ def click_in_region_multi(
     """
     在区域内多次点击, 用于双击/连击.
     第一次: 随机取点 + 贝塞尔移动 + 真实点击(无偏移).
-    后续每次: 随机间隔 + 随机偏移(钳制在区域内) + 贝塞尔移动 + 真实点击.
+    后续每次: 随机间隔 + 随机偏移(钳制在区域内) + 微距移动 + 真实点击.
     返回已实际完成点击的落点列表 clicks.
     """
     clicks: list[tuple[int, int, float, float]] = []
-    tx = random.randint(x, x + w)
-    ty = random.randint(y, y + h)
+    tx = random.randint(x, x + max(0, w - 1))
+    ty = random.randint(y, y + max(0, h - 1))
     if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
         return clicks
     if not _real_click(click_speed):
@@ -228,22 +319,22 @@ def click_in_region_multi(
         if stop_event and stop_event.is_set():
             break
 
-        interval = random.uniform(interval_range[0], interval_range[1]) / click_speed
-        end = time.time() + interval
-        while time.time() < end:
-            if stop_event and stop_event.is_set():
+        interval = random.uniform(interval_range[0], interval_range[1]) / max(0.1, float(click_speed))
+        if stop_event:
+            if stop_event.wait(timeout=max(0.0, interval)):
                 return clicks
-            time.sleep(0.05)
+        else:
+            time.sleep(max(0.0, interval))
 
         if stop_event and stop_event.is_set():
             break
 
         dx = random.randint(-offset_range, offset_range)
         dy = random.randint(-offset_range, offset_range)
-        tx = max(x, min(x + w, tx + dx))
-        ty = max(y, min(y + h, ty + dy))
+        tx = max(x, min(x + max(0, w - 1), tx + dx))
+        ty = max(y, min(y + max(0, h - 1), ty + dy))
 
-        if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):
+        if not _micro_move(tx, ty, move_speed, stop_event=stop_event):
             return clicks
         if not _real_click(click_speed):
             return clicks

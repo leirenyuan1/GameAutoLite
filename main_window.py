@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
         self._engine_dying = False  # 旧引擎线程退出中标志（wait 超时兜底防御）
         self._moveAnimating = False
         self._suppress_floating = False  # 抑制悬浮窗（截图/选取区域时）
+        self._is_selecting = False  # 选区互斥状态锁（防并发框选与热键竞态）
         self._floating_widget: FloatingWidget | None = None  # 悬浮窗实例（延迟初始化）
         self._global_settings: dict = {"scan_interval": 200, "auto_minimize": False, "move_speed": 1.0, "click_speed": 1.0, "show_floating_widget": False, "always_show_floating": False}
 
@@ -291,25 +292,40 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def prepare_selection_mode(self) -> dict:
-        """选区开始前瞬时隐藏主窗口与悬浮窗（禁用 DWM 渐隐动画 + Alpha 归零 + DwmFlush 帧同步）."""
+    def prepare_selection_mode(self) -> dict | None:
+        """选区开始前瞬时隐藏主窗口、悬浮窗与散点大图（禁用 DWM 渐隐动画 + Alpha 归零 + DwmFlush 帧同步）."""
+        if getattr(self, "_is_selecting", False):
+            logger.warning("已在选区模式中，忽略重复选区请求")
+            return None
+        self._is_selecting = True
+        self._hotkey_mgr.unregister_all()
+        self._preview_timer.stop()
         for c in self._task_cards:
             if hasattr(c, "close_highlight_overlay"):
                 c.close_highlight_overlay()
+        scatter_dlg = getattr(getattr(self, "_dashboard_page", None), "_scatter_dialog", None)
+        scatter_was_vis = bool(scatter_dlg and scatter_dlg.isVisible())
         state = {
             "geom": self.geometry(),
             "was_maximized": self.isMaximized(),
-            "floating_was_visible": bool(self._floating_widget and self._floating_widget.isVisible())
+            "floating_was_visible": bool(self._floating_widget and self._floating_widget.isVisible()),
+            "scatter_was_visible": scatter_was_vis,
         }
         self._suppress_floating = True
 
-        # 1. 瞬时隐藏悬浮窗（禁用过渡动画 + 透明度归零 + hide）
+        # 1. 瞬时隐藏散点大图弹窗（若已打开）
+        if scatter_was_vis and scatter_dlg:
+            self._set_dwm_transitions_disabled(scatter_dlg, True)
+            scatter_dlg.setWindowOpacity(0.0)
+            scatter_dlg.hide()
+
+        # 2. 瞬时隐藏悬浮窗（禁用过渡动画 + 透明度归零 + hide）
         if state["floating_was_visible"] and self._floating_widget:
             self._set_dwm_transitions_disabled(self._floating_widget, True)
             self._floating_widget.setWindowOpacity(0.0)
             self._floating_widget.hide()
 
-        # 2. 瞬时隐藏主窗口（禁用过渡动画 + 透明度归零 + hide）
+        # 3. 瞬时隐藏主窗口（禁用过渡动画 + 透明度归零 + hide）
         if self.isVisible():
             self._set_dwm_transitions_disabled(self, True)
             self.setWindowOpacity(0.0)
@@ -320,9 +336,13 @@ class MainWindow(QMainWindow):
             time.sleep(0.02)
         return state
 
-    def restore_after_selection(self, state: dict) -> None:
-        """选区完成后精准恢复主窗口（含最大化支持）、DWM 动画属性与悬浮窗."""
+    def restore_after_selection(self, state: dict | None) -> None:
+        """选区完成后精准恢复主窗口（含最大化支持）、DWM 动画属性、散点大图与悬浮窗."""
         self._suppress_floating = False
+        self._is_selecting = False
+        self._restore_hotkeys()
+        if not state:
+            return
         self.setWindowOpacity(1.0)
         if state.get("was_maximized"):
             self.showMaximized()
@@ -333,16 +353,28 @@ class MainWindow(QMainWindow):
         self._set_dwm_transitions_disabled(self, False)
         self.raise_()
         self.activateWindow()
-        if state.get("floating_was_visible") and self.chk_always_floating.isChecked():
-            if self._floating_widget:
-                self._set_dwm_transitions_disabled(self._floating_widget, False)
-                self._floating_widget.setWindowOpacity(1.0)
-            self._sync_and_show_floating()
+
+        # 无条件恢复悬浮窗 DWM 过渡动画属性，并在常驻模式下恢复显示
+        if self._floating_widget:
+            self._set_dwm_transitions_disabled(self._floating_widget, False)
+            if state.get("floating_was_visible") and self.chk_always_floating.isChecked():
+                self._floating_widget.setWindowOpacity(self.slider_opacity.value() / 100.0)
+                self._sync_and_show_floating()
+
+        # 恢复散点大图弹窗
+        scatter_dlg = getattr(getattr(self, "_dashboard_page", None), "_scatter_dialog", None)
+        if scatter_dlg:
+            self._set_dwm_transitions_disabled(scatter_dlg, False)
+            scatter_dlg.setWindowOpacity(1.0)
+            if state.get("scatter_was_visible"):
+                scatter_dlg.show()
 
     def _on_stop_img_capture(self) -> None:
         """条件三：截图选取 (BUG-01, BUG-02, BUG-03)."""
         main_win = self.window()
         state = main_win.prepare_selection_mode() if main_win else None
+        if state is None:
+            return
         img = None
         try:
             result, cropped = overlay_selector.get_region_with_image(prompt="拖拽鼠标划定停止条件识别图, 按 Esc 取消")
@@ -774,14 +806,19 @@ class MainWindow(QMainWindow):
 
     # ---- 快捷键管理 ----
 
+    def _restore_hotkeys(self) -> None:
+        """安全恢复全局热键."""
+        self._hotkey_mgr.unregister_all()
+        if self._global_settings.get("hotkeys_enabled", True):
+            enabled = [h for h in self._global_settings.get("hotkeys", []) if h.get("enabled", True)]
+            if enabled:
+                self._hotkey_mgr.register_all(self, "_toggle_engine", enabled)
+
     @pyqtSlot(list)
     def _on_hotkeys_changed(self, hotkeys: list[dict]) -> None:
         """设置页快捷键变更时调用。"""
-        self._hotkey_mgr.unregister_all()
-        enabled_hotkeys = [h for h in hotkeys if h.get("enabled", True)]
-        if enabled_hotkeys and self._global_settings.get("hotkeys_enabled", True):
-            self._hotkey_mgr.register_all(self, "_toggle_engine", enabled_hotkeys)
         self._global_settings["hotkeys"] = hotkeys
+        self._restore_hotkeys()
 
     def _on_top_toggled(self, checked: bool) -> None:
         """切换窗口置顶状态（保留可见性与最大化状态）."""
@@ -807,7 +844,9 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _toggle_engine(self) -> None:
-        """双向切换: 运行中则停止, 未运行则启动."""
+        """双向切换: 运行中则停止, 未运行则启动. 选区遮罩或窗口关闭期间忽略触发."""
+        if self._suppress_floating or getattr(self, "_is_selecting", False):
+            return
         if self._engine and self._engine.isRunning():
             self._stop_engine()
         else:
@@ -1697,10 +1736,7 @@ class MainWindow(QMainWindow):
                 self._settings_page.populate_hotkeys(self._global_settings["hotkeys"])
 
                 # 注册热键
-                if self._global_settings.get("hotkeys_enabled", True):
-                    enabled = [h for h in self._global_settings["hotkeys"] if h.get("enabled", True)]
-                    if enabled:
-                        self._hotkey_mgr.register_all(self, "_toggle_engine", enabled)
+                self._restore_hotkeys()
 
                 # 同步 UI 控件 - 复选框
                 top_enabled = self._global_settings.get("always_on_top", False)

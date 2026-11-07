@@ -710,6 +710,8 @@ class CollapsibleTaskCard(QFrame):
         """通过 overlay 框选屏幕区域, 截图并保存为模板图片 (BUG-01, BUG-02, BUG-03)."""
         main_win = self.window()
         state = main_win.prepare_selection_mode() if main_win else None
+        if state is None:
+            return
         img = None
         try:
             result, cropped = overlay_selector.get_region_with_image(prompt="拖拽鼠标划定模板图片区域, 按 Esc 取消")
@@ -860,6 +862,8 @@ class CollapsibleTaskCard(QFrame):
         """设定点击区域 (BUG-01, BUG-02, BUG-03)."""
         main_win = self.window()
         state = main_win.prepare_selection_mode() if main_win else None
+        if state is None:
+            return
         try:
             if self._multi_region:
                 result = overlay_selector.get_regions()
@@ -1144,6 +1148,8 @@ class CollapsibleTaskCard(QFrame):
 
             main_win = self.window()
             state = main_win.prepare_selection_mode() if main_win else None
+            if state is None:
+                return
             match_res = None
             try:
                 screenshot = image_engine.take_screenshot()
@@ -1210,6 +1216,8 @@ class CollapsibleTaskCard(QFrame):
         """限定图像识别范围 ROI."""
         main_win = self.window()
         state = main_win.prepare_selection_mode() if main_win else None
+        if state is None:
+            return
         try:
             result = overlay_selector.get_region(prompt="拖拽鼠标划定【图像识别范围】, 按 Esc 取消")
         finally:

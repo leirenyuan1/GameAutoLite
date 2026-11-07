@@ -125,14 +125,9 @@ class EngineThread(QThread):
                         break
 
                     img_path = cfg["image_path"]
-                    if img_path in self._template_cache:
-                        template = self._template_cache[img_path]
-                    else:
-                        template = image_engine.load_template(img_path)
-                        if template is not None:
-                            self._template_cache[img_path] = template
-                        else:
-                            template = None
+                    if img_path not in self._template_cache:
+                        self._template_cache[img_path] = image_engine.load_template(img_path)
+                    template = self._template_cache[img_path]
                     if template is None:
                         continue
 
@@ -183,23 +178,15 @@ class EngineThread(QThread):
                         try:
                             click_count = cfg.get("click_count", 1)
                             if cfg.get("multi_region", False):
-                                regions = cfg["regions"]
-                                for ci in range(click_count):
-                                    if self._stop_event.is_set():
-                                        break
-                                    if ci > 0:
-                                        _interval = random.uniform(0.15, 0.25) / self._click_speed
-                                        self._sleep_interruptible(_interval)
-                                        if self._stop_event.is_set():
-                                            break
-                                    c = mouse_controller.click_in_regions(
-                                        regions,
-                                        move_speed=self._move_speed,
-                                        click_speed=self._click_speed,
-                                        stop_event=self._stop_event,
-                                    )
-                                    if c:
-                                        click_results.extend(c)
+                                c = mouse_controller.click_in_regions(
+                                    cfg["regions"],
+                                    move_speed=self._move_speed,
+                                    click_speed=self._click_speed,
+                                    stop_event=self._stop_event,
+                                    count=click_count,
+                                )
+                                if c:
+                                    click_results.extend(c)
                             elif cfg.get("click_on_match", False):
                                 if click_count <= 1:
                                     c = mouse_controller.click_in_region(
