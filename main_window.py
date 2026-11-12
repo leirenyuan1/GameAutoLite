@@ -307,19 +307,26 @@ class MainWindow(QMainWindow):
                 if hasattr(c, "close_highlight_overlay"):
                     c.close_highlight_overlay()
             scatter_dlg = getattr(getattr(self, "_dashboard_page", None), "_scatter_dialog", None)
+            stats_dlg = getattr(getattr(self, "_dashboard_page", None), "_stats_dialog", None)
             scatter_was_vis = bool(scatter_dlg and scatter_dlg.isVisible())
+            stats_was_vis = bool(stats_dlg and stats_dlg.isVisible())
             state = {
                 "geom": self.geometry(),
                 "was_maximized": self.isMaximized(),
                 "floating_was_visible": bool(self._floating_widget and self._floating_widget.isVisible()),
                 "scatter_was_visible": scatter_was_vis,
+                "stats_was_visible": stats_was_vis,
             }
 
-            # 1. 瞬时隐藏散点大图弹窗（若已打开）
-            if scatter_was_vis and scatter_dlg:
-                self._set_dwm_transitions_disabled(scatter_dlg, True)
-                scatter_dlg.setWindowOpacity(0.0)
-                scatter_dlg.hide()
+            any_hidden = False
+
+            # 1. 瞬时隐藏散点大图与完整任务统计弹窗（若已打开）
+            for dlg, was_vis in ((scatter_dlg, scatter_was_vis), (stats_dlg, stats_was_vis)):
+                if was_vis and dlg:
+                    self._set_dwm_transitions_disabled(dlg, True)
+                    dlg.setWindowOpacity(0.0)
+                    dlg.hide()
+                    any_hidden = True
 
             # 2. 瞬时隐藏悬浮窗（先停止淡入/淡出动画与隐藏气泡提示，再禁用过渡动画 + 透明度归零 + hide）
             if self._floating_widget and hasattr(self._floating_widget, "_stop_running_anim"):
@@ -329,12 +336,17 @@ class MainWindow(QMainWindow):
                 self._set_dwm_transitions_disabled(self._floating_widget, True)
                 self._floating_widget.setWindowOpacity(0.0)
                 self._floating_widget.hide()
+                any_hidden = True
 
             # 3. 瞬时隐藏主窗口（禁用过渡动画 + 透明度归零 + hide）
             if self.isVisible():
                 self._set_dwm_transitions_disabled(self, True)
                 self.setWindowOpacity(0.0)
                 self.hide()
+                any_hidden = True
+
+            # 4. 只要任意窗口被隐藏，均执行事件刷新与 DWM 帧同步
+            if any_hidden:
                 QApplication.processEvents()
                 # 等待 DWM 提交完当前无窗口合成帧（替代盲等 sleep，极速且 100% 无残影）
                 self._flush_dwm()
@@ -379,14 +391,16 @@ class MainWindow(QMainWindow):
                 self._floating_widget.setWindowOpacity(self.slider_opacity.value() / 100.0)
                 self._sync_and_show_floating()
 
-        # 恢复散点大图弹窗
-        scatter_dlg = getattr(getattr(self, "_dashboard_page", None), "_scatter_dialog", None)
-        if scatter_dlg:
-            self._set_dwm_transitions_disabled(scatter_dlg, False)
-            scatter_dlg.setWindowOpacity(1.0)
-            if state.get("scatter_was_visible"):
-                scatter_dlg.show()
-                scatter_dlg.raise_()
+        # 恢复散点大图与完整任务统计弹窗
+        dashboard = getattr(self, "_dashboard_page", None)
+        for attr, key in (("_scatter_dialog", "scatter_was_visible"), ("_stats_dialog", "stats_was_visible")):
+            dlg = getattr(dashboard, attr, None)
+            if dlg:
+                self._set_dwm_transitions_disabled(dlg, False)
+                dlg.setWindowOpacity(1.0)
+                if state.get(key):
+                    dlg.show()
+                    dlg.raise_()
 
     def _on_stop_img_capture(self) -> None:
         """条件三：截图选取 (BUG-01, BUG-02, BUG-03)."""

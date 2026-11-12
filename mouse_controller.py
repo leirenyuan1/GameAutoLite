@@ -249,6 +249,8 @@ def click_in_region(
     若移动途中被 stop_event 打断, 则立即返回已记录的 clicks 并不执行真实点击.
     返回 list[tuple[int, int, float, float]], 元素为 (tx, ty, norm_x, norm_y).
     """
+    if w <= 0 or h <= 0:
+        return []
     clicks: list[tuple[int, int, float, float]] = []
     # 第一步: 在区域内均匀随机取点(禁止取中心点)
     tx = random.randint(x, x + max(0, w - 1))
@@ -326,6 +328,8 @@ def click_in_region_multi(
     后续每次: 随机间隔 + 随机偏移(钳制在区域内) + 微距移动 + 真实点击.
     返回已实际完成点击的落点列表 clicks.
     """
+    if w <= 0 or h <= 0:
+        return []
     clicks: list[tuple[int, int, float, float]] = []
     if count <= 0:
         return clicks

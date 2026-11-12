@@ -187,45 +187,28 @@ class EngineThread(QThread):
                                 )
                                 if c:
                                     click_results.extend(c)
-                            elif cfg.get("click_on_match", False):
-                                if click_count <= 1:
-                                    c = mouse_controller.click_in_region(
-                                        rx, ry, rw, rh,
-                                        move_speed=self._move_speed,
-                                        click_speed=self._click_speed,
-                                        stop_event=self._stop_event,
-                                    )
-                                    if c:
-                                        click_results.extend(c)
-                                else:
-                                    c = mouse_controller.click_in_region_multi(
-                                        rx, ry, rw, rh, count=click_count,
-                                        move_speed=self._move_speed,
-                                        click_speed=self._click_speed,
-                                        stop_event=self._stop_event,
-                                    )
-                                    if c:
-                                        click_results.extend(c)
                             else:
-                                rx_reg, ry_reg, rw_reg, rh_reg = cfg["region"]
-                                if click_count <= 1:
-                                    c = mouse_controller.click_in_region(
-                                        rx_reg, ry_reg, rw_reg, rh_reg,
-                                        move_speed=self._move_speed,
-                                        click_speed=self._click_speed,
-                                        stop_event=self._stop_event,
+                                c = None
+                                if click_count > 0:
+                                    tx_reg, ty_reg, tw_reg, th_reg = (
+                                        (rx, ry, rw, rh) if cfg.get("click_on_match", False) else cfg["region"]
                                     )
-                                    if c:
-                                        click_results.extend(c)
-                                else:
-                                    c = mouse_controller.click_in_region_multi(
-                                        rx_reg, ry_reg, rw_reg, rh_reg, count=click_count,
-                                        move_speed=self._move_speed,
-                                        click_speed=self._click_speed,
-                                        stop_event=self._stop_event,
-                                    )
-                                    if c:
-                                        click_results.extend(c)
+                                    if click_count == 1:
+                                        c = mouse_controller.click_in_region(
+                                            tx_reg, ty_reg, tw_reg, th_reg,
+                                            move_speed=self._move_speed,
+                                            click_speed=self._click_speed,
+                                            stop_event=self._stop_event,
+                                        )
+                                    elif click_count > 1:
+                                        c = mouse_controller.click_in_region_multi(
+                                            tx_reg, ty_reg, tw_reg, th_reg, count=click_count,
+                                            move_speed=self._move_speed,
+                                            click_speed=self._click_speed,
+                                            stop_event=self._stop_event,
+                                        )
+                                if c:
+                                    click_results.extend(c)
                         except Exception as e:
                             logger.error(f"点击失败: {e}")
 
