@@ -157,7 +157,7 @@ class CollapsibleTaskCard(QFrame):
         self._active_overlay: _MatchHighlightOverlay | None = None
         self._highlight_timer = QTimer(self)
         self._highlight_timer.setSingleShot(True)
-        self._highlight_timer.timeout.connect(self.close_highlight_overlay)
+        self._highlight_timer.timeout.connect(self._close_overlay_only)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -1105,19 +1105,23 @@ class CollapsibleTaskCard(QFrame):
         """)
         self._test_btn_timer.start(2000)
 
-    def close_highlight_overlay(self) -> None:
-        """安全关闭并清理测试识别高亮浮窗，同时复位测试按钮状态."""
+    def _close_overlay_only(self) -> None:
+        """仅安全关闭并清理屏幕高亮浮窗，不影响测试按钮 2 秒回显倒计时."""
         if hasattr(self, "_highlight_timer") and self._highlight_timer.isActive():
             self._highlight_timer.stop()
-        if hasattr(self, "_test_btn_timer") and self._test_btn_timer.isActive():
-            self._test_btn_timer.stop()
-            self._reset_test_button()
         if getattr(self, "_active_overlay", None) is not None:
             try:
                 self._active_overlay.close()
             except (RuntimeError, Exception):
                 pass
             self._active_overlay = None
+
+    def close_highlight_overlay(self) -> None:
+        """安全关闭并清理测试识别高亮浮窗，同时复位测试按钮状态."""
+        self._close_overlay_only()
+        if hasattr(self, "_test_btn_timer") and self._test_btn_timer.isActive():
+            self._test_btn_timer.stop()
+            self._reset_test_button()
 
     def _on_test_match(self) -> None:
         """单任务「测试识别」执行与全屏高亮反馈 (FEAT-02)."""

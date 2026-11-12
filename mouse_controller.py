@@ -124,6 +124,8 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
     for factor in speed_factors:
         acc += factor
         cum_times.append(acc / total_speed)
+    if cum_times:
+        cum_times[-1] = 1.0
 
     points = []
     for i in range(num_samples):
@@ -172,10 +174,12 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
                     break
 
             if idx != last_idx:
-                win32api.SetCursorPos(points[idx])
+                try:
+                    win32api.SetCursorPos(points[idx])
+                except Exception as e:
+                    logger.error(f"设置鼠标位置失败: {e}")
+                    return False
                 last_idx = idx
-                if idx >= num_samples - 1:
-                    break
 
             next_target = total_time * cum_times[idx]
             remain = next_target - (time.perf_counter() - start_perf)
@@ -189,7 +193,11 @@ def _bezier_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
 
         if stop_event and stop_event.is_set():
             return False
-        win32api.SetCursorPos((int(tx), int(ty)))
+        try:
+            win32api.SetCursorPos((int(tx), int(ty)))
+        except Exception as e:
+            logger.error(f"设置鼠标终点位置失败: {e}")
+            return False
     return True
 
 
@@ -216,13 +224,16 @@ def _micro_move(tx: int, ty: int, speed: float = 1.0, stop_event=None) -> bool:
             if s < steps:
                 nx += random.choice([-1, 0, 1])
                 ny += random.choice([-1, 0, 1])
-            win32api.SetCursorPos((nx, ny))
-            if s < steps:
-                if stop_event:
-                    if stop_event.wait(timeout=max(0.0, step_wait)):
-                        return False
-                else:
-                    time.sleep(max(0.0, step_wait))
+            try:
+                win32api.SetCursorPos((nx, ny))
+            except Exception as e:
+                logger.error(f"设置鼠标微距位置失败: {e}")
+                return False
+            if stop_event:
+                if stop_event.wait(timeout=max(0.0, step_wait)):
+                    return False
+            else:
+                time.sleep(max(0.0, step_wait))
     return True
 
 
@@ -269,11 +280,22 @@ def click_in_regions(
     若移动途中被 stop_event 打断, 则立即返回已记录的 clicks.
     返回 list[tuple[int, int, float, float]], 元素为 (tx, ty, norm_x, norm_y).
     """
-    if not regions:
+    if not regions or count <= 0:
         return []
-    weights = [max(1, max(0, int(w)) * max(0, int(h))) for _, _, w, h in regions]
-    x, y, w, h = random.choices(regions, weights=weights, k=1)[0]
-    if count <= 1:
+    valid_regions = []
+    for r in regions:
+        if isinstance(r, (list, tuple)) and len(r) == 4:
+            try:
+                rx, ry, rw, rh = int(r[0]), int(r[1]), int(r[2]), int(r[3])
+                if rw > 0 and rh > 0:
+                    valid_regions.append((rx, ry, rw, rh))
+            except (ValueError, TypeError):
+                continue
+    if not valid_regions:
+        return []
+    weights = [rw * rh for _, _, rw, rh in valid_regions]
+    x, y, w, h = random.choices(valid_regions, weights=weights, k=1)[0]
+    if count == 1:
         return click_in_region(
             x, y, w, h,
             move_speed=move_speed,
@@ -305,6 +327,9 @@ def click_in_region_multi(
     返回已实际完成点击的落点列表 clicks.
     """
     clicks: list[tuple[int, int, float, float]] = []
+    if count <= 0:
+        return clicks
+    offset_range = max(0, int(offset_range))
     tx = random.randint(x, x + max(0, w - 1))
     ty = random.randint(y, y + max(0, h - 1))
     if not _bezier_move(tx, ty, move_speed, stop_event=stop_event):

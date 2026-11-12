@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QCheckBox, QScrollArea, QSlider, QFrame,
     QSizePolicy, QFileDialog, QMessageBox, QStackedWidget, QComboBox,
-    QGraphicsOpacityEffect, QSizeGrip, QMenu,
+    QGraphicsOpacityEffect, QSizeGrip, QMenu, QToolTip,
 )
 
 # ↓ _on_stop_img_capture 仍需要这四个库，不要删除
@@ -298,43 +298,61 @@ class MainWindow(QMainWindow):
             logger.warning("已在选区模式中，忽略重复选区请求")
             return None
         self._is_selecting = True
-        self._hotkey_mgr.unregister_all()
-        self._preview_timer.stop()
-        for c in self._task_cards:
-            if hasattr(c, "close_highlight_overlay"):
-                c.close_highlight_overlay()
-        scatter_dlg = getattr(getattr(self, "_dashboard_page", None), "_scatter_dialog", None)
-        scatter_was_vis = bool(scatter_dlg and scatter_dlg.isVisible())
-        state = {
-            "geom": self.geometry(),
-            "was_maximized": self.isMaximized(),
-            "floating_was_visible": bool(self._floating_widget and self._floating_widget.isVisible()),
-            "scatter_was_visible": scatter_was_vis,
-        }
         self._suppress_floating = True
+        state: dict | None = None
+        try:
+            self._hotkey_mgr.unregister_all()
+            self._preview_timer.stop()
+            for c in self._task_cards:
+                if hasattr(c, "close_highlight_overlay"):
+                    c.close_highlight_overlay()
+            scatter_dlg = getattr(getattr(self, "_dashboard_page", None), "_scatter_dialog", None)
+            scatter_was_vis = bool(scatter_dlg and scatter_dlg.isVisible())
+            state = {
+                "geom": self.geometry(),
+                "was_maximized": self.isMaximized(),
+                "floating_was_visible": bool(self._floating_widget and self._floating_widget.isVisible()),
+                "scatter_was_visible": scatter_was_vis,
+            }
 
-        # 1. 瞬时隐藏散点大图弹窗（若已打开）
-        if scatter_was_vis and scatter_dlg:
-            self._set_dwm_transitions_disabled(scatter_dlg, True)
-            scatter_dlg.setWindowOpacity(0.0)
-            scatter_dlg.hide()
+            # 1. 瞬时隐藏散点大图弹窗（若已打开）
+            if scatter_was_vis and scatter_dlg:
+                self._set_dwm_transitions_disabled(scatter_dlg, True)
+                scatter_dlg.setWindowOpacity(0.0)
+                scatter_dlg.hide()
 
-        # 2. 瞬时隐藏悬浮窗（禁用过渡动画 + 透明度归零 + hide）
-        if state["floating_was_visible"] and self._floating_widget:
-            self._set_dwm_transitions_disabled(self._floating_widget, True)
-            self._floating_widget.setWindowOpacity(0.0)
-            self._floating_widget.hide()
+            # 2. 瞬时隐藏悬浮窗（先停止淡入/淡出动画与隐藏气泡提示，再禁用过渡动画 + 透明度归零 + hide）
+            if self._floating_widget and hasattr(self._floating_widget, "_stop_running_anim"):
+                self._floating_widget._stop_running_anim()
+            QToolTip.hideText()
+            if state["floating_was_visible"] and self._floating_widget:
+                self._set_dwm_transitions_disabled(self._floating_widget, True)
+                self._floating_widget.setWindowOpacity(0.0)
+                self._floating_widget.hide()
 
-        # 3. 瞬时隐藏主窗口（禁用过渡动画 + 透明度归零 + hide）
-        if self.isVisible():
-            self._set_dwm_transitions_disabled(self, True)
-            self.setWindowOpacity(0.0)
-            self.hide()
-            QApplication.processEvents()
-            # 等待 DWM 提交完当前无窗口合成帧（替代盲等 sleep，极速且 100% 无残影）
-            self._flush_dwm()
-            time.sleep(0.02)
-        return state
+            # 3. 瞬时隐藏主窗口（禁用过渡动画 + 透明度归零 + hide）
+            if self.isVisible():
+                self._set_dwm_transitions_disabled(self, True)
+                self.setWindowOpacity(0.0)
+                self.hide()
+                QApplication.processEvents()
+                # 等待 DWM 提交完当前无窗口合成帧（替代盲等 sleep，极速且 100% 无残影）
+                self._flush_dwm()
+                time.sleep(0.02)
+            return state
+        except Exception as e:
+            logger.error(f"进入选区模式异常，正在回滚状态: {e}")
+            try:
+                self.restore_after_selection(state)
+            except Exception as rollback_err:
+                logger.error(f"回滚选区状态失败: {rollback_err}")
+                self._suppress_floating = False
+                self._is_selecting = False
+                try:
+                    self._restore_hotkeys()
+                except Exception:
+                    pass
+            return None
 
     def restore_after_selection(self, state: dict | None) -> None:
         """选区完成后精准恢复主窗口（含最大化支持）、DWM 动画属性、散点大图与悬浮窗."""
@@ -368,6 +386,7 @@ class MainWindow(QMainWindow):
             scatter_dlg.setWindowOpacity(1.0)
             if state.get("scatter_was_visible"):
                 scatter_dlg.show()
+                scatter_dlg.raise_()
 
     def _on_stop_img_capture(self) -> None:
         """条件三：截图选取 (BUG-01, BUG-02, BUG-03)."""
