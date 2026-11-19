@@ -176,12 +176,18 @@ python -m pip install -r requirements.txt
 python -m pip install pyinstaller
 ```
 
-然后执行打包命令：
+然后在 PowerShell 中执行以下命令。打包期间会临时缩小当前 PowerShell 进程的 `PATH`，避免 PyInstaller 从 Poppler、Office 等其他软件目录误收集不兼容的 DLL；命令结束后会恢复原来的 `PATH`。
 
-```bash
-# 文件夹形式（当前唯一发布形式，启动快）
-# --noconfirm：自动覆盖已有的 dist 打包输出，无需交互确认
-python -m PyInstaller --noconfirm --windowed --icon=icon.ico --name=GameAutoLite --add-data "icon.ico;." main.py
+```powershell
+$python = (Get-Command python).Source
+$pythonDir = Split-Path -Parent $python
+$originalPath = $env:PATH
+try {
+    $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$pythonDir;$(Join-Path $pythonDir 'Scripts');$PWD"
+    & $python -m PyInstaller --noconfirm --windowed --icon=icon.ico --name=GameAutoLite --add-data "icon.ico;." main.py
+} finally {
+    $env:PATH = $originalPath
+}
 ```
 
 打包后把 `dist/GameAutoLite/` 整个目录（包括 `GameAutoLite.exe` 和 `_internal/`）压缩为 `GameAutoLite-folder.zip` 发布。
