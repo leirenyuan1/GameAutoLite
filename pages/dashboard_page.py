@@ -1,14 +1,3 @@
-"""
-数据看板页面 (pages/dashboard_page.py)
-=====================================
-生产级工业加固版本：
-1. 折线图与流水列表排版安全无裁切 (136px 固定高度 / 22px item sizeHint / 水平滚动条关闭 / X 轴限位居中);
-2. 历史执行流水闭环持久化与双模式解耦 (确立「历史 = 已结算」架构原则，最新在前，停机合并，占位符互斥);
-3. 高分屏 (2880×1800@200% DPI) 全屏物理像素映射与 Letterbox 居中等比视口防形变;
-4. 独立高清大图弹窗 ClickScatterDialog (单例管理、最大化支持、Tooltip 精确探测与全生命周期清理);
-5. 损坏配置早退保护与多维度原子重置。
-"""
-
 from __future__ import annotations
 
 import collections
@@ -17,449 +6,113 @@ import logging
 import os
 import subprocess
 import time
-from dataclasses import dataclass
 
-from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSlot
-from PyQt6.QtGui import (
-    QColor, QFont, QFontMetrics, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen,
-)
+from PyQt6.QtCore import QEvent, QObject, QRect, QSize, Qt, QTimer, pyqtSlot
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter
 from PyQt6.QtWidgets import (
-    QApplication, QButtonGroup, QDialog, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
+    QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QToolTip, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QToolTip, QVBoxLayout, QWidget,
 )
 
-from pages.utils import make_settings_card
 from styles.colors import (
     CLR_BTN_PRIMARY, CLR_CARD_BG, CLR_CARD_BORDER,
     CLR_CONTENT_BG, CLR_SIDEBAR_ACT, CLR_TEXT_MAIN, CLR_TEXT_SUB,
 )
 from styles.icons import button_icon, set_label_icon
+from widgets.dashboard_charts import (
+    ScatterPoint, get_primary_screen_physical_size, normalize_click_physical,
+    make_dashboard_card, TrendChartWidget,
+    ClickScatterWidget, ClickScatterDialog, FullTaskStatsDialog,
+)
 
 logger = logging.getLogger(__name__)
 
-
-# ------------------------------------------------------------
-# 1. 核心数据结构定义
-# ------------------------------------------------------------
-@dataclass(frozen=True, slots=True)
-class ScatterPoint:
-    """点击物理落点数据结构 (全屏物理坐标与归一化坐标)."""
-    nx: float          # 全屏归一化 X (0.0 ~ 1.0, 经过 clamp)
-    ny: float          # 全屏归一化 Y (0.0 ~ 1.0, 经过 clamp)
-    tx: int            # 真实物理像素 X (如 241)
-    ty: int            # 真实物理像素 Y (如 795)
-    task_name: str     # 触发该点击的任务名
-    timestamp_str: str # 触发时间戳 (如 "05:04:09")
+RANK_DISPLAY_LIMIT = 5
+RANK_COLLAPSE_THRESHOLD = 6
 
 
-# ------------------------------------------------------------
-# 2. 坐标与视口纯函数定义
-# ------------------------------------------------------------
-def get_primary_screen_physical_size() -> tuple[int, int]:
-    """获取主屏物理像素尺寸 (sw_px, sh_px)，严格返回 2 元组，杜绝解包报错."""
-    screen = QApplication.primaryScreen()
-    if not screen:
-        return (1920, 1080)
-    geom = screen.geometry()
-    dpr = screen.devicePixelRatio()
-    sw = int(round(geom.width() * dpr))
-    sh = int(round(geom.height() * dpr))
-    return (max(1, sw), max(1, sh))
-
-
-def normalize_click_physical(tx: int, ty: int, sw_px: int, sh_px: int) -> tuple[float, float]:
-    """物理像素归一化，严密 clamp 在 [0.0, 1.0]，内部防除零."""
-    nx = min(1.0, max(0.0, float(tx) / max(1, float(sw_px))))
-    ny = min(1.0, max(0.0, float(ty) / max(1, float(sh_px))))
-    return (nx, ny)
-
-
-def fit_letterbox_rect(avail_w: int, avail_h: int, target_w: int, target_h: int, pad: int = 12) -> tuple[int, int, int, int]:
-    """在可用空间内计算保持 target_w:target_h 宽高比的最大居中矩形 (x, y, w, h)."""
-    max_w = max(10, avail_w - pad * 2)
-    max_h = max(10, avail_h - pad * 2)
-    scale = min(max_w / float(target_w), max_h / float(target_h))
-    fit_w = int(round(target_w * scale))
-    fit_h = int(round(target_h * scale))
-    fit_x = pad + (max_w - fit_w) // 2
-    fit_y = pad + (max_h - fit_h) // 2
-    return (fit_x, fit_y, fit_w, fit_h)
-
-
-class _DashboardCard(QFrame):
-    """看板卡片容器：允许水平自适应收缩至 550px 极窄视口 (420px 零溢出)."""
-
-    def minimumSizeHint(self) -> QSize:
-        return QSize(0, super().minimumSizeHint().height())
-
-
-_dashboard_card_counter = 0
-
-
-def make_dashboard_card(title_text: str) -> tuple[_DashboardCard, QVBoxLayout]:
-    """创建支持窄窗口自适应收缩的分组卡片."""
-    global _dashboard_card_counter
-    _dashboard_card_counter += 1
-    card_id = f"dashboard_card_{_dashboard_card_counter}"
-
-    card = _DashboardCard()
-    card.setObjectName(card_id)
-    card.setStyleSheet(f"""
-        #{card_id} {{
-            background: {CLR_CARD_BG};
-            border: 1px solid {CLR_CARD_BORDER};
-            border-radius: 10px;
-        }}
-    """)
-    shadow = QGraphicsDropShadowEffect()
-    shadow.setBlurRadius(12)
-    shadow.setOffset(0, 2)
-    shadow.setColor(QColor(33, 150, 243, 30))
-    card.setGraphicsEffect(shadow)
-
-    card_layout = QVBoxLayout(card)
-    card_layout.setContentsMargins(12, 8, 12, 10)
-    card_layout.setSpacing(6)
-
-    header = QLabel(title_text)
-    header.setMinimumWidth(0)
-    header.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {CLR_TEXT_MAIN};")
-    card_layout.addWidget(header)
-
-    return card, card_layout
-
-
-# ------------------------------------------------------------
-# 3. 自绘折线图组件 (TrendChartWidget)
-# ------------------------------------------------------------
-class TrendChartWidget(QWidget):
-    """自绘最近 15 分钟触发频率趋势折线图 (带渐变填充与边界安全限位)."""
+class _DashboardTooltipWindow(QWidget):
+    """看板排行使用的自绘提示框，避开系统 QToolTip 的原生配色。"""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(160)
-        self._trend_buckets: dict[int, int] = {}
-        self._is_history_mode: bool = False
+        super().__init__(parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setFont(QFont("Microsoft YaHei", 9))
+        self._text = ""
 
-    def update_data(self, buckets: dict[int, int], is_history: bool = False) -> None:
-        self._trend_buckets = buckets
-        self._is_history_mode = is_history
+    def show_text(self, text: str, anchor) -> None:
+        self._text = text
+        screen = QApplication.screenAt(anchor) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+        max_width = max(100, min(460, available.width() - 24))
+        text_flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap
+        text_bounds = QFontMetrics(self.font()).boundingRect(
+            QRect(0, 0, max_width - 20, max(1000, available.height())), text_flags, text
+        )
+        width = min(max_width, max(90, text_bounds.width() + 20))
+        height = min(max(30, text_bounds.height() + 14), max(30, available.height() - 16))
+        self.resize(width, height)
+
+        x = anchor.x() + 14
+        y = anchor.y() + 18
+        if x + width > available.right() + 1:
+            x = anchor.x() - width - 14
+        if y + height > available.bottom() + 1:
+            y = anchor.y() - height - 14
+        x = max(available.left() + 4, min(x, available.right() - width - 3))
+        y = max(available.top() + 4, min(y, available.bottom() - height - 3))
+        self.move(x, y)
+        self.show()
+        self.raise_()
         self.update()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        if self._is_history_mode:
-            painter.setPen(QColor(CLR_TEXT_SUB))
-            painter.setFont(QFont("Microsoft YaHei", 10))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "历史模式不提供实时趋势")
-            return
-
-        cur_min = int(time.time() // 60)
-        minutes = [cur_min - 14 + i for i in range(15)]
-        counts = [self._trend_buckets.get(m, 0) for m in minutes]
-        labels = [time.strftime("%H:%M", time.localtime(m * 60)) for m in [minutes[0], minutes[5], minutes[10], minutes[14]]]
-
-        pad_left, pad_right, pad_top, pad_bottom = 32, 16, 16, 28
-        max_val = max(max(counts, default=0), 5)
-
-        # 绘制网格与刻度
-        painter.setPen(QPen(QColor("#EAF4FD"), 1))
-        painter.setFont(QFont("Microsoft YaHei", 9))
-        for i in range(4):
-            y = pad_top + (h - pad_top - pad_bottom) * (i / 3.0)
-            painter.drawLine(pad_left, int(y), w - pad_right, int(y))
-            val_str = str(int(round(max_val * (1.0 - i / 3.0))))
-            painter.setPen(QColor(CLR_TEXT_SUB))
-            painter.drawText(4, int(y - 6), 24, 12, Qt.AlignmentFlag.AlignRight, val_str)
-            painter.setPen(QPen(QColor("#EAF4FD"), 1))
-
-        # 计算折线顶点
-        pts = []
-        for idx, cnt in enumerate(counts):
-            x = pad_left + (w - pad_left - pad_right) * (idx / 14.0)
-            y = pad_top + (h - pad_top - pad_bottom) * (1.0 - cnt / float(max_val))
-            pts.append((x, y))
-
-        # 面积渐变填充
-        path = QPainterPath()
-        path.moveTo(pts[0][0], pts[0][1])
-        for x, y in pts[1:]:
-            path.lineTo(x, y)
-        path.lineTo(pts[-1][0], h - pad_bottom)
-        path.lineTo(pts[0][0], h - pad_bottom)
-        path.closeSubpath()
-
-        grad = QLinearGradient(0, pad_top, 0, h - pad_bottom)
-        grad.setColorAt(0.0, QColor(33, 150, 243, 60))
-        grad.setColorAt(1.0, QColor(33, 150, 243, 0))
-        painter.fillPath(path, grad)
-
-        # 绘制折线
-        painter.setPen(QPen(QColor(CLR_SIDEBAR_ACT), 2))
-        for idx in range(len(pts) - 1):
-            painter.drawLine(int(pts[idx][0]), int(pts[idx][1]), int(pts[idx + 1][0]), int(pts[idx + 1][1]))
-
-        # 绘制顶点圆点
-        for x, y in pts:
-            painter.setPen(QPen(QColor(CLR_SIDEBAR_ACT), 2))
-            painter.setBrush(QColor("#FFFFFF"))
-            painter.drawEllipse(int(x - 3), int(y - 3), 6, 6)
-
-        # 底部 X 轴标签 (严格左右下边界安全限位，绝不越界)
-        painter.setPen(QColor(CLR_TEXT_SUB))
-        label_xs = [
-            pad_left,
-            pad_left + (w - pad_left - pad_right) * (5 / 14.0),
-            pad_left + (w - pad_left - pad_right) * (10 / 14.0),
-            w - pad_right,
-        ]
-        for lx, ltext in zip(label_xs, labels):
-            rect_x = min(max(0, int(lx - 20)), w - 40)
-            painter.drawText(rect_x, int(h - 22), 40, 16, Qt.AlignmentFlag.AlignCenter, ltext)
-
-
-# ------------------------------------------------------------
-# 4. 主卡片全屏散点组件 (ClickScatterWidget)
-# ------------------------------------------------------------
-class ClickScatterWidget(QWidget):
-    """自绘全屏物理点击落点分布图 (等比例 Letterbox + 绝对物理坐标)."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(160)
-        self._scatter_points = collections.deque(maxlen=100)
-        self._is_history_mode: bool = False
-
-    def update_data(self, points: collections.deque, is_history: bool = False) -> None:
-        self._scatter_points = points
-        self._is_history_mode = is_history
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        if self._is_history_mode:
-            painter.setPen(QColor(CLR_TEXT_SUB))
-            painter.setFont(QFont("Microsoft YaHei", 10))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "历史模式不提供实时分布")
-            return
-
-        sw_px, sh_px = get_primary_screen_physical_size()
-        pad = 14
-        fit_x, fit_y, fit_w, fit_h = fit_letterbox_rect(w, h, sw_px, sh_px, pad=pad)
-
-        # 屏幕外框与底色
-        painter.setPen(QPen(QColor(CLR_CARD_BORDER), 1))
-        painter.setBrush(QColor(CLR_CONTENT_BG))
-        painter.drawRoundedRect(fit_x, fit_y, fit_w, fit_h, 8, 8)
-
-        # 十字虚线
-        pen_dash = QPen(QColor("#C5DFFA"), 1, Qt.PenStyle.DashLine)
-        painter.setPen(pen_dash)
-        painter.drawLine(fit_x, int(fit_y + fit_h / 2.0), fit_x + fit_w, int(fit_y + fit_h / 2.0))
-        painter.drawLine(int(fit_x + fit_w / 2.0), fit_y, int(fit_x + fit_w / 2.0), fit_y + fit_h)
-
-        # 遍历 ScatterPoint 绘制
-        pts = list(self._scatter_points)
-        if pts:
-            for pt in pts[:-1]:
-                px = fit_x + pt.nx * fit_w
-                py = fit_y + pt.ny * fit_h
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(33, 150, 243, 140))
-                painter.drawEllipse(int(px - 2.5), int(py - 2.5), 5, 5)
-
-            # 最新点静态高亮双环
-            lpt = pts[-1]
-            lx = fit_x + lpt.nx * fit_w
-            ly = fit_y + lpt.ny * fit_h
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(67, 160, 71, 70))
-            painter.drawEllipse(int(lx - 7.5), int(ly - 7.5), 15, 15)
-            painter.setPen(QPen(QColor("#FFFFFF"), 1.5))
-            painter.setBrush(QColor("#43A047"))
-            painter.drawEllipse(int(lx - 3.5), int(ly - 3.5), 7, 7)
-
-        # 右下角微缩视口标注 (动态测量文字宽度 + 半透明底垫防遮挡落点)
-        txt = f"{sw_px}×{sh_px} 视口"
-        painter.setFont(QFont("Microsoft YaHei", 8))
-        fm = painter.fontMetrics()
-        tw = min(fm.horizontalAdvance(txt) + 10, max(10, fit_w - 8))
-        th = fm.height() + 2
-        tx = fit_x + fit_w - tw - 4
-        ty = fit_y + fit_h - th - 3
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 255, 255, 180))
-        painter.drawRoundedRect(tx, ty, tw, th, 3, 3)
-        painter.setPen(QColor(CLR_TEXT_SUB))
-        painter.drawText(tx, ty, tw, th, Qt.AlignmentFlag.AlignCenter, txt)
-
-
-# ------------------------------------------------------------
-# 5. 高清全屏大图弹窗 (ClickScatterDialog)
-# ------------------------------------------------------------
-class ClickScatterDialog(QDialog):
-    """高清全屏点击落点大图弹窗 (支持拉伸、最大化、Tooltip 精确探测、Esc 退出)."""
-
-    def __init__(self, dashboard: DashboardPage):
-        super().__init__(parent=dashboard)
-        self._dashboard = dashboard
-        self._hovered_pt: ScatterPoint | None = None
-        self.setWindowTitle("屏幕点击分布高清大图")
-        self.resize(850, 550)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setMouseTracking(True)
-        self.setStyleSheet(f"background: {CLR_CONTENT_BG};")
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        if self._dashboard._current_view_mode == "history":
-            QToolTip.hideText()
-            painter.setPen(QColor(CLR_TEXT_SUB))
-            painter.setFont(QFont("Microsoft YaHei", 12))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "历史模式不提供实时分布")
-            return
-
-        pts = list(self._dashboard._scatter_points)
-        if not pts:
-            QToolTip.hideText()
-            painter.setPen(QColor(CLR_TEXT_SUB))
-            painter.setFont(QFont("Microsoft YaHei", 12))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "暂无点击记录")
-            return
-
-        sw_px, sh_px = get_primary_screen_physical_size()
-        pad = 24
-        fit_x, fit_y, fit_w, fit_h = fit_letterbox_rect(w, h, sw_px, sh_px, pad=pad)
-
-        # 绘制外框与十字辅助线
-        painter.setPen(QPen(QColor(CLR_CARD_BORDER), 1.5))
+        painter.fillRect(self.rect(), QColor("#FFFFFF"))
+        painter.setPen(QColor("#D6E9FA"))
         painter.setBrush(QColor("#FFFFFF"))
-        painter.drawRoundedRect(fit_x, fit_y, fit_w, fit_h, 8, 8)
-
-        pen_dash = QPen(QColor("#C5DFFA"), 1, Qt.PenStyle.DashLine)
-        painter.setPen(pen_dash)
-        painter.drawLine(fit_x, int(fit_y + fit_h / 2.0), fit_x + fit_w, int(fit_y + fit_h / 2.0))
-        painter.drawLine(int(fit_x + fit_w / 2.0), fit_y, int(fit_x + fit_w / 2.0), fit_y + fit_h)
-
-        # 绘制散点
-        for pt in pts[:-1]:
-            px = fit_x + pt.nx * fit_w
-            py = fit_y + pt.ny * fit_h
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(33, 150, 243, 160))
-            painter.drawEllipse(int(px - 3.5), int(py - 3.5), 7, 7)
-
-        # 最新点静态高亮双环
-        lpt = pts[-1]
-        lx = fit_x + lpt.nx * fit_w
-        ly = fit_y + lpt.ny * fit_h
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(67, 160, 71, 70))
-        painter.drawEllipse(int(lx - 10), int(ly - 10), 20, 20)
-        painter.setPen(QPen(QColor("#FFFFFF"), 2))
-        painter.setBrush(QColor("#43A047"))
-        painter.drawEllipse(int(lx - 4.5), int(ly - 4.5), 9, 9)
-
-        # 悬停命中点动态十字准星与外环 (FIX-05)
-        if self._hovered_pt is not None and self._hovered_pt in pts:
-            hx = int(round(fit_x + self._hovered_pt.nx * fit_w))
-            hy = int(round(fit_y + self._hovered_pt.ny * fit_h))
-            pen_cross = QPen(QColor(239, 83, 80, 180), 1, Qt.PenStyle.DashLine)
-            painter.setPen(pen_cross)
-            painter.drawLine(fit_x, hy, fit_x + fit_w, hy)
-            painter.drawLine(hx, fit_y, hx, fit_y + fit_h)
-            painter.setPen(QPen(QColor("#EF5350"), 2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(hx - 6, hy - 6, 12, 12)
-
-        # 右下角视口标注 (动态测量文字宽度 + 半透明底垫防遮挡落点)
-        txt = f"{sw_px}×{sh_px} 真实物理视口"
-        painter.setFont(QFont("Microsoft YaHei", 9))
-        fm = painter.fontMetrics()
-        tw = min(fm.horizontalAdvance(txt) + 12, max(10, fit_w - 12))
-        th = fm.height() + 2
-        tx = fit_x + fit_w - tw - 6
-        ty = fit_y + fit_h - th - 5
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 255, 255, 190))
-        painter.drawRoundedRect(tx, ty, tw, th, 4, 4)
-        painter.setPen(QColor(CLR_TEXT_SUB))
-        painter.drawText(tx, ty, tw, th, Qt.AlignmentFlag.AlignCenter, txt)
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._dashboard._current_view_mode == "history":
-            QToolTip.hideText()
-            if self._hovered_pt is not None:
-                self._hovered_pt = None
-                self.update()
-            return
-        pts = list(self._dashboard._scatter_points)
-        if not pts:
-            QToolTip.hideText()
-            if self._hovered_pt is not None:
-                self._hovered_pt = None
-                self.update()
-            return
-
-        sw_px, sh_px = get_primary_screen_physical_size()
-        fit_x, fit_y, fit_w, fit_h = fit_letterbox_rect(self.width(), self.height(), sw_px, sh_px, pad=24)
-        mx, my = event.pos().x(), event.pos().y()
-
-        hovered_pt = None
-        for pt in reversed(pts):
-            px = fit_x + pt.nx * fit_w
-            py = fit_y + pt.ny * fit_h
-            if (mx - px) ** 2 + (my - py) ** 2 <= 64:  # 8px 半径内精准命中
-                hovered_pt = pt
-                break
-
-        if hovered_pt != self._hovered_pt:
-            self._hovered_pt = hovered_pt
-            self.update()
-
-        if hovered_pt:
-            tip = f"[{hovered_pt.task_name}] 落点: ({hovered_pt.tx}, {hovered_pt.ty}) · 时间: {hovered_pt.timestamp_str}"
-            QToolTip.showText(event.globalPosition().toPoint(), tip, self)
-        else:
-            QToolTip.hideText()
-
-    def resizeEvent(self, event) -> None:
-        QToolTip.hideText()
-        if self._hovered_pt is not None:
-            self._hovered_pt = None
-            self.update()
-        super().resizeEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        QToolTip.hideText()
-        if self._hovered_pt is not None:
-            self._hovered_pt = None
-            self.update()
-        super().leaveEvent(event)
-
-    def closeEvent(self, event) -> None:
-        QToolTip.hideText()
-        if self._hovered_pt is not None:
-            self._hovered_pt = None
-            self.update()
-        super().closeEvent(event)
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 4, 4)
+        painter.setPen(QColor("#1A2B3C"))
+        text_rect = self.rect().adjusted(10, 6, -10, -6)
+        text_flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap
+        painter.drawText(text_rect, text_flags, self._text)
 
 
-# ------------------------------------------------------------
-# 6. 数据看板主页面 (DashboardPage)
-# ------------------------------------------------------------
+class _DashboardTooltipController(QObject):
+    """在排行子控件间切换时保持提示框稳定，并在离开整行后收起。"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._tooltip = _DashboardTooltipWindow(parent)
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.setInterval(100)
+        self._hide_timer.timeout.connect(self._tooltip.hide)
+
+    def register(self, widget: QWidget, text: str) -> None:
+        widget.setToolTip("")
+        widget.setProperty("_dashboard_tooltip_text", text)
+        widget.installEventFilter(self)
+
+    def hide(self) -> None:
+        self._hide_timer.stop()
+        self._tooltip.hide()
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.Enter:
+            text = watched.property("_dashboard_tooltip_text")
+            if isinstance(text, str) and text:
+                self._hide_timer.stop()
+                self._tooltip.show_text(text, QCursor.pos())
+        elif event.type() == QEvent.Type.Leave:
+            self._hide_timer.start()
+        return False
+
+
 class DashboardPage(QScrollArea):
     """数据看板主页面 (工业生产级加固实现)."""
 
@@ -487,8 +140,12 @@ class DashboardPage(QScrollArea):
         self._history_logs = collections.deque(maxlen=50)
         self._scatter_points = collections.deque(maxlen=100)
         self._trend_buckets = {}
+        self._stats_dialog: FullTaskStatsDialog | None = None
+        self.btn_rank_all: QPushButton | None = None
+        self.btn_hist_clicks_all: QPushButton | None = None
         self._scatter_dialog: ClickScatterDialog | None = None
         self.btn_zoom: QPushButton | None = None
+        self._rank_tooltip_controller = _DashboardTooltipController(self)
 
         # 4. 计时器、真实时钟基准与排行防抖定时器 (BUG-03 修复：基于自然时钟杜绝跳秒)
         self._session_start_time: float = 0.0
@@ -595,7 +252,26 @@ class DashboardPage(QScrollArea):
         layout.addLayout(kpi_grid)
 
         # 任务排行
+        # 「任务触发排行与占比」标题栏右侧按钮
         rank_card, rank_layout = make_dashboard_card("任务触发排行与占比")
+        self.btn_rank_all = QPushButton("查看全部")
+        self.btn_rank_all.setFixedHeight(24)
+        self.btn_rank_all.setVisible(False)
+        self.btn_rank_all.setStyleSheet(
+            f"QPushButton {{ background: #FFFFFF; border: 1px solid {CLR_CARD_BORDER}; border-radius: 4px; "
+            f"padding: 0 8px; font-size: 11px; color: {CLR_TEXT_MAIN}; }} "
+            f"QPushButton:hover {{ border-color: #B0CDE8; color: {CLR_BTN_PRIMARY}; }}"
+        )
+        self.btn_rank_all.clicked.connect(lambda: self._open_stats_dialog("matches"))
+        if rank_layout.count() > 0:
+            hdr_rank = rank_layout.itemAt(0).widget()
+            hdr_rank.setFixedHeight(24)
+            rank_layout.removeWidget(hdr_rank)
+            h_row_rank = QHBoxLayout()
+            h_row_rank.addWidget(hdr_rank)
+            h_row_rank.addStretch(1)
+            h_row_rank.addWidget(self.btn_rank_all)
+            rank_layout.insertLayout(0, h_row_rank)
         self.rank_container = QVBoxLayout()
         rank_layout.addLayout(self.rank_container)
         layout.addWidget(rank_card)
@@ -637,10 +313,29 @@ class DashboardPage(QScrollArea):
         # 历史累计模式双卡片 (点击贡献榜 + 数据存储与备份迁移指引)
         self.card_hist_clicks, l_hist_clicks = make_dashboard_card("各任务累计点击贡献")
         self.card_hist_clicks.setMinimumWidth(0)
-        if l_hist_clicks.count() > 0 and l_hist_clicks.itemAt(0).widget():
-            hdr = l_hist_clicks.itemAt(0).widget()
-            hdr.setFixedHeight(24)
-            hdr.setMinimumWidth(0)
+        self.btn_hist_clicks_all = QPushButton("查看全部")
+        self.btn_hist_clicks_all.setFixedHeight(24)
+        self.btn_hist_clicks_all.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.btn_hist_clicks_all.setVisible(False)
+        self.btn_hist_clicks_all.setStyleSheet(
+            f"QPushButton {{ background: #FFFFFF; border: 1px solid {CLR_CARD_BORDER}; border-radius: 4px; "
+            f"padding: 0 6px; font-size: 11px; color: {CLR_TEXT_MAIN}; }} "
+            f"QPushButton:hover {{ border-color: #B0CDE8; color: {CLR_BTN_PRIMARY}; }}"
+        )
+        self.btn_hist_clicks_all.clicked.connect(lambda: self._open_stats_dialog("clicks"))
+        self._hdr_hist_clicks: QLabel | None = None
+        if l_hist_clicks.count() > 0:
+            hdr_hc = l_hist_clicks.itemAt(0).widget()
+            hdr_hc.setFixedHeight(24)
+            hdr_hc.setMinimumWidth(0)
+            hdr_hc.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            hdr_hc.setToolTip("各任务累计点击贡献")
+            self._hdr_hist_clicks = hdr_hc
+            l_hist_clicks.removeWidget(hdr_hc)
+            h_row_hc = QHBoxLayout()
+            h_row_hc.addWidget(hdr_hc, 1)
+            h_row_hc.addWidget(self.btn_hist_clicks_all)
+            l_hist_clicks.insertLayout(0, h_row_hc)
         self.hist_clicks_container = QVBoxLayout()
         self.hist_clicks_container.setContentsMargins(0, 4, 0, 4)
         self.hist_clicks_container.setSpacing(8)
@@ -772,6 +467,39 @@ class DashboardPage(QScrollArea):
     # ------------------------------------------------------------
     # 单例弹窗工厂与销毁回调
     # ------------------------------------------------------------
+    def get_scatter_snapshot(self) -> tuple[bool, list[ScatterPoint]]:
+        """返回 (是否处于历史模式, 当前散点列表浅拷贝)，供高清大图弹窗只读消费."""
+        return (self._current_view_mode == "history", list(self._scatter_points))
+
+    def get_full_stats_snapshot(self) -> tuple[str, dict, int, int]:
+        """返回 (当前模式, task_stats 深拷贝, 总匹配分母, 总点击分母)，供明细弹窗只读消费."""
+        is_sess = (self._current_view_mode == "session")
+        target_stats = self._session.get("task_stats", {}) if is_sess else self._history.get("task_stats", {})
+        valid_vals = [v for v in target_stats.values() if isinstance(v, dict)]
+        total_matches = self._session.get("matches", 0) if is_sess else self._history.get("total_matches", 0)
+        sum_m = sum(v.get("matches", 0) for v in valid_vals if v.get("matches", 0) > 0)
+        tot_m = max(total_matches, sum_m)
+        total_clicks = self._session.get("clicks", 0) if is_sess else self._history.get("total_clicks", 0)
+        sum_c = sum(v.get("clicks", 0) for v in valid_vals if v.get("clicks", 0) > 0)
+        denom_clicks = max(total_clicks, sum_c)
+        return (self._current_view_mode, copy.deepcopy(target_stats), tot_m, denom_clicks)
+
+    def _open_stats_dialog(self, focus: str = "matches") -> None:
+        try:
+            if self._stats_dialog is None:
+                self._stats_dialog = FullTaskStatsDialog(self, focus=focus)
+                self._stats_dialog.destroyed.connect(self._on_stats_dialog_destroyed)
+            else:
+                self._stats_dialog.refresh_data(focus=focus)
+            self._stats_dialog.show()
+            self._stats_dialog.raise_()
+            self._stats_dialog.activateWindow()
+        except Exception as e:
+            logger.error(f"打开任务明细弹窗异常: {e}")
+
+    def _on_stats_dialog_destroyed(self) -> None:
+        self._stats_dialog = None
+
     def _open_scatter_dialog(self) -> None:
         try:
             if self._scatter_dialog is None:
@@ -1152,6 +880,7 @@ class DashboardPage(QScrollArea):
             if not hasattr(self, "hist_clicks_container") or self.hist_clicks_container is None:
                 return
 
+            self._rank_tooltip_controller.hide()
             while self.hist_clicks_container.count() > 0:
                 it = self.hist_clicks_container.takeAt(0)
                 w = it.widget()
@@ -1161,8 +890,18 @@ class DashboardPage(QScrollArea):
 
             task_stats = self._history.get("task_stats", {})
             total_clicks = self._history.get("total_clicks", 0)
+            valid_items = [
+                (name, s) for name, s in task_stats.items()
+                if isinstance(s, dict) and s.get("clicks", 0) > 0
+            ]
+            sum_clicks = sum(s.get("clicks", 0) for _, s in valid_items)
+            denom_clicks = max(total_clicks, sum_clicks)
 
-            if not task_stats or total_clicks <= 0:
+            if not valid_items or denom_clicks <= 0:
+                if getattr(self, "btn_hist_clicks_all", None):
+                    self.btn_hist_clicks_all.setVisible(False)
+                if getattr(self, "_hdr_hist_clicks", None):
+                    self._hdr_hist_clicks.setText("各任务累计点击贡献")
                 empty = QLabel("暂无历史点击数据，运行任务后在此展示累计战绩")
                 empty.setWordWrap(True)
                 empty.setMinimumWidth(0)
@@ -1177,12 +916,71 @@ class DashboardPage(QScrollArea):
             row_content_width = card_w - 28 if card_w > 0 else 0
             calc_row_w = 165 if row_content_width < 140 else row_content_width
 
-            for name, s in sorted(task_stats.items(), key=lambda x: x[1].get("clicks", 0), reverse=True):
-                clicks = s.get("clicks", 0)
-                pct = (clicks / float(total_clicks) * 100.0) if total_clicks > 0 else 0.0
-                matches = s.get("matches", 0)
-                ratio = (clicks / float(matches)) if matches > 0 else 0.0
+            sorted_items = sorted(
+                valid_items,
+                key=lambda x: (x[1].get("clicks", 0), x[1].get("matches", 0)),
+                reverse=True,
+            )
 
+            total_count = len(sorted_items)
+            if getattr(self, "btn_hist_clicks_all", None):
+                self.btn_hist_clicks_all.setVisible(total_count > RANK_COLLAPSE_THRESHOLD)
+                if total_count > RANK_COLLAPSE_THRESHOLD:
+                    self.btn_hist_clicks_all.setText(f"查看全部 ({total_count})")
+            if getattr(self, "_hdr_hist_clicks", None):
+                if total_count > RANK_COLLAPSE_THRESHOLD and getattr(self, "btn_hist_clicks_all", None):
+                    btn_w = self.btn_hist_clicks_all.sizeHint().width()
+                    avail_hdr_w = max(24, calc_row_w - btn_w - 6)
+                    hdr_font = QFont("Microsoft YaHei")
+                    hdr_font.setPixelSize(13)
+                    hdr_font.setWeight(QFont.Weight.Bold)
+                    self._hdr_hist_clicks.setText(
+                        QFontMetrics(hdr_font).elidedText("各任务累计点击贡献", Qt.TextElideMode.ElideRight, avail_hdr_w)
+                    )
+                else:
+                    self._hdr_hist_clicks.setText("各任务累计点击贡献")
+
+            display_rows: list[tuple[str, int, str, bool]] = []
+            if total_count > RANK_COLLAPSE_THRESHOLD:
+                top_items = sorted_items[:RANK_DISPLAY_LIMIT]
+                rest_items = sorted_items[RANK_DISPLAY_LIMIT:]
+                for name, s in top_items:
+                    clicks = s.get("clicks", 0)
+                    matches = s.get("matches", 0)
+                    pct = clicks / float(denom_clicks) * 100.0
+                    ratio = (clicks / float(matches)) if matches > 0 else 0.0
+                    tip = f"{name}: 累计点击 {clicks:,} 次, 占比 {pct:.1f}%, 连击率 {ratio:.1f}"
+                    display_rows.append((name, clicks, tip, False))
+
+                rest_clicks = sum(s.get("clicks", 0) for _, s in rest_items)
+                rest_matches = sum(s.get("matches", 0) for _, s in rest_items)
+                rest_pct = rest_clicks / float(denom_clicks) * 100.0
+                rest_ratio = (rest_clicks / float(rest_matches)) if rest_matches > 0 else 0.0
+                tip_lines = [
+                    f"其余 {len(rest_items)} 项任务合计: {rest_clicks:,} 次 ({rest_pct:.1f}%), 连击率 {rest_ratio:.1f}"
+                ]
+                for r_name, r_s in rest_items[:20]:
+                    r_clk = r_s.get("clicks", 0)
+                    r_p = r_clk / float(denom_clicks) * 100.0
+                    r_m = r_s.get("matches", 0)
+                    r_rt = (r_clk / float(r_m)) if r_m > 0 else 0.0
+                    tip_lines.append(f"· {r_name}: {r_clk:,}次 ({r_p:.1f}%) · 连击率{r_rt:.1f}")
+                if len(rest_items) > 20:
+                    tip_lines.append(f"... 另有 {len(rest_items) - 20} 项低频任务（点击右上角「查看全部」搜索查看）")
+                display_rows.append((
+                    f"其他 (共{len(rest_items)}项)", rest_clicks, "\n".join(tip_lines), True
+                ))
+            else:
+                for name, s in sorted_items:
+                    clicks = s.get("clicks", 0)
+                    matches = s.get("matches", 0)
+                    pct = clicks / float(denom_clicks) * 100.0
+                    ratio = (clicks / float(matches)) if matches > 0 else 0.0
+                    tip = f"{name}: 累计点击 {clicks:,} 次, 占比 {pct:.1f}%, 连击率 {ratio:.1f}"
+                    display_rows.append((name, clicks, tip, False))
+
+            for name, clicks, tip_text, is_other in display_rows:
+                pct = (clicks / float(denom_clicks) * 100.0) if denom_clicks > 0 else 0.0
                 if clicks < 10000:
                     val_text = f"{clicks} ({pct:.0f}%)"
                 elif clicks < 100000:
@@ -1211,12 +1009,14 @@ class DashboardPage(QScrollArea):
 
                 font_name = QFont("Microsoft YaHei")
                 font_name.setPixelSize(11)
-                font_name.setWeight(QFont.Weight.Bold)
+                font_name.setWeight(QFont.Weight.Normal if is_other else QFont.Weight.Bold)
                 elided_name = QFontMetrics(font_name).elidedText(name, Qt.TextElideMode.ElideRight, avail_w)
                 lbl_name = QLabel(elided_name)
                 lbl_name.setFont(font_name)
                 lbl_name.setMaximumWidth(avail_w)
-                lbl_name.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {CLR_TEXT_MAIN};")
+                name_clr = CLR_TEXT_SUB if is_other else CLR_TEXT_MAIN
+                name_wt = "normal" if is_other else "bold"
+                lbl_name.setStyleSheet(f"font-size: 11px; font-weight: {name_wt}; color: {name_clr};")
 
                 h_row.addWidget(lbl_name)
                 h_row.addStretch(1)
@@ -1227,6 +1027,7 @@ class DashboardPage(QScrollArea):
                 bar.setTextVisible(False)
                 bar.setRange(0, 1000)
                 bar.setValue(int(pct * 10))
+                chunk_clr = "#90CAF9" if is_other else CLR_SIDEBAR_ACT
                 bar.setStyleSheet(f"""
                     QProgressBar {{
                         background: #EAF4FD;
@@ -1234,7 +1035,7 @@ class DashboardPage(QScrollArea):
                         border-radius: 3px;
                     }}
                     QProgressBar::chunk {{
-                        background: {CLR_SIDEBAR_ACT};
+                        background: {chunk_clr};
                         border-radius: 3px;
                     }}
                 """)
@@ -1242,13 +1043,11 @@ class DashboardPage(QScrollArea):
                 item_layout.addLayout(h_row)
                 item_layout.addWidget(bar)
 
-                tip_text = f"{name}: 累计点击 {clicks:,} 次, 占比 {pct:.1f}%, 连击率 {ratio:.1f}"
-                item_widget.setToolTip(tip_text)
-                lbl_name.setToolTip(tip_text)
-                lbl_val.setToolTip(tip_text)
-                bar.setToolTip(tip_text)
+                for w in (item_widget, lbl_name, lbl_val, bar):
+                    self._rank_tooltip_controller.register(w, tip_text)
 
                 self.hist_clicks_container.addWidget(item_widget)
+
         except Exception as e:
             logger.error(f"刷新历史点击榜异常: {e}")
 
@@ -1257,6 +1056,7 @@ class DashboardPage(QScrollArea):
             is_sess = (self._current_view_mode == "session")
             target_stats = self._session["task_stats"] if is_sess else self._history["task_stats"]
 
+            self._rank_tooltip_controller.hide()
             while self.rank_container.count() > 0:
                 it = self.rank_container.takeAt(0)
                 w = it.widget()
@@ -1264,57 +1064,132 @@ class DashboardPage(QScrollArea):
                     w.hide()
                     w.deleteLater()
 
-            tot_m = sum(v.get("matches", 0) for v in target_stats.values())
-            if not target_stats or tot_m == 0:
+            valid_items = [
+                (name, s) for name, s in target_stats.items()
+                if isinstance(s, dict) and s.get("matches", 0) > 0
+            ]
+            total_matches = self._session.get("matches", 0) if is_sess else self._history.get("total_matches", 0)
+            sum_m = sum(s.get("matches", 0) for _, s in valid_items)
+            tot_m = max(total_matches, sum_m)
+
+            if not valid_items or tot_m <= 0:
+                if getattr(self, "btn_rank_all", None):
+                    self.btn_rank_all.setVisible(False)
                 empty = QLabel("暂无任务触发记录")
                 empty.setStyleSheet(f"color: {CLR_TEXT_SUB}; font-size: 12px; padding: 12px;")
                 empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.rank_container.addWidget(empty)
-            else:
-                for name, s in sorted(target_stats.items(), key=lambda x: x[1].get("matches", 0), reverse=True):
+                if self._stats_dialog and self._stats_dialog.isVisible():
+                    self._stats_dialog.refresh_data()
+                return
+
+            sorted_items = sorted(
+                valid_items,
+                key=lambda x: (x[1].get("matches", 0), x[1].get("total_score", 0.0)),
+                reverse=True,
+            )
+
+            total_count = len(sorted_items)
+            if getattr(self, "btn_rank_all", None):
+                self.btn_rank_all.setVisible(total_count > RANK_COLLAPSE_THRESHOLD)
+                if total_count > RANK_COLLAPSE_THRESHOLD:
+                    self.btn_rank_all.setText(f"查看全部 ({total_count})")
+
+            display_rows: list[tuple[str, int, float, str, bool]] = []
+            if total_count > RANK_COLLAPSE_THRESHOLD:
+                top_items = sorted_items[:RANK_DISPLAY_LIMIT]
+                rest_items = sorted_items[RANK_DISPLAY_LIMIT:]
+                for name, s in top_items:
                     cnt = s.get("matches", 0)
-                    pct = (cnt / float(tot_m) * 100.0) if tot_m > 0 else 0.0
                     avg_sc = (s.get("total_score", 0.0) / float(cnt)) if cnt > 0 else 0.0
+                    pct = cnt / float(tot_m) * 100.0
+                    tip = f"{name}: 触发 {cnt:,} 次 ({pct:.1f}%) · 平均精度 {avg_sc:.1f}%"
+                    display_rows.append((name, cnt, avg_sc, tip, False))
 
-                    row_widget = QWidget()
-                    row = QHBoxLayout(row_widget)
-                    row.setContentsMargins(0, 2, 0, 2)
-                    row.setSpacing(8)
+                rest_cnt = sum(s.get("matches", 0) for _, s in rest_items)
+                rest_sc_sum = sum(s.get("total_score", 0.0) for _, s in rest_items)
+                rest_avg_sc = (rest_sc_sum / float(rest_cnt)) if rest_cnt > 0 else 0.0
+                rest_pct = rest_cnt / float(tot_m) * 100.0
+                tip_lines = [
+                    f"其余 {len(rest_items)} 项低频任务合计: {rest_cnt:,}次 ({rest_pct:.1f}%) · 均分{rest_avg_sc:.0f}%"
+                ]
+                for r_name, r_s in rest_items[:20]:
+                    r_c = r_s.get("matches", 0)
+                    r_p = r_c / float(tot_m) * 100.0
+                    r_sc = (r_s.get("total_score", 0.0) / float(r_c)) if r_c > 0 else 0.0
+                    tip_lines.append(f"· {r_name}: {r_c:,}次 ({r_p:.1f}%) · 均分{r_sc:.0f}%")
+                if len(rest_items) > 20:
+                    tip_lines.append(f"... 另有 {len(rest_items) - 20} 项任务（点击右上角「查看全部」搜索查看）")
+                display_rows.append((
+                    f"其他 (共{len(rest_items)}项)", rest_cnt, rest_avg_sc, "\n".join(tip_lines), True
+                ))
+            else:
+                for name, s in sorted_items:
+                    cnt = s.get("matches", 0)
+                    avg_sc = (s.get("total_score", 0.0) / float(cnt)) if cnt > 0 else 0.0
+                    pct = cnt / float(tot_m) * 100.0
+                    tip = f"{name}: 触发 {cnt:,} 次 ({pct:.1f}%) · 平均精度 {avg_sc:.1f}%"
+                    display_rows.append((name, cnt, avg_sc, tip, False))
 
-                    lbl_n = QLabel()
-                    lbl_n.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Bold))
-                    lbl_n.setText(lbl_n.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 92))
-                    lbl_n.setToolTip(name)
-                    lbl_n.setFixedWidth(95)
-                    lbl_n.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {CLR_TEXT_MAIN};")
+            for name, cnt, avg_sc, tip_text, is_other in display_rows:
+                pct = (cnt / float(tot_m) * 100.0) if tot_m > 0 else 0.0
+                row_widget = QWidget()
+                row = QHBoxLayout(row_widget)
+                row.setContentsMargins(0, 2, 0, 2)
+                row.setSpacing(8)
 
-                    bar = QProgressBar()
-                    bar.setFixedHeight(8)
-                    bar.setTextVisible(False)
-                    bar.setRange(0, 1000)
-                    bar.setValue(int(pct * 10))
-                    bar.setMinimumWidth(40)
-                    bar.setStyleSheet(f"""
-                        QProgressBar {{
-                            background: #EAF4FD;
-                            border: none;
-                            border-radius: 4px;
-                        }}
-                        QProgressBar::chunk {{
-                            background: {CLR_SIDEBAR_ACT};
-                            border-radius: 4px;
-                        }}
-                    """)
+                font_n = QFont("Microsoft YaHei")
+                font_n.setPixelSize(11)
+                font_n.setWeight(QFont.Weight.Normal if is_other else QFont.Weight.Bold)
+                lbl_n = QLabel()
+                lbl_n.setFont(font_n)
+                lbl_n.setText(QFontMetrics(font_n).elidedText(name, Qt.TextElideMode.ElideRight, 92))
+                lbl_n.setFixedWidth(95)
+                name_clr = CLR_TEXT_SUB if is_other else CLR_TEXT_MAIN
+                name_wt = "normal" if is_other else "bold"
+                lbl_n.setStyleSheet(f"font-size: 11px; font-weight: {name_wt}; color: {name_clr};")
 
-                    lbl_s = QLabel(f"{cnt}次 ({pct:.0f}%) · 均分{avg_sc:.0f}%")
-                    lbl_s.setFixedWidth(135)
-                    lbl_s.setAlignment(Qt.AlignmentFlag.AlignRight)
-                    lbl_s.setStyleSheet(f"font-size: 10px; color: {CLR_TEXT_SUB};")
+                bar = QProgressBar()
+                bar.setFixedHeight(8)
+                bar.setTextVisible(False)
+                bar.setRange(0, 1000)
+                bar.setValue(int(pct * 10))
+                bar.setMinimumWidth(40)
+                chunk_clr = "#90CAF9" if is_other else CLR_SIDEBAR_ACT
+                bar.setStyleSheet(f"""
+                    QProgressBar {{
+                        background: #EAF4FD;
+                        border: none;
+                        border-radius: 4px;
+                    }}
+                    QProgressBar::chunk {{
+                        background: {chunk_clr};
+                        border-radius: 4px;
+                    }}
+                """)
 
-                    row.addWidget(lbl_n)
-                    row.addWidget(bar, 1)
-                    row.addWidget(lbl_s)
-                    self.rank_container.addWidget(row_widget)
+                stat_text = f"{cnt}次 ({pct:.0f}%) · 均分{avg_sc:.0f}%"
+                font_s = QFont("Microsoft YaHei")
+                font_s.setPixelSize(10)
+                lbl_s = QLabel(stat_text)
+                lbl_s.setFont(font_s)
+                lbl_s.setMinimumWidth(QFontMetrics(font_s).horizontalAdvance(stat_text) + 2)
+                lbl_s.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                lbl_s.setStyleSheet(f"font-size: 10px; color: {CLR_TEXT_SUB};")
+
+                for w in (row_widget, lbl_n, bar, lbl_s):
+                    if is_sess:
+                        w.setToolTip(tip_text)
+                    else:
+                        self._rank_tooltip_controller.register(w, tip_text)
+
+                row.addWidget(lbl_n)
+                row.addWidget(bar, 1)
+                row.addWidget(lbl_s)
+                self.rank_container.addWidget(row_widget)
+
+            if self._stats_dialog and self._stats_dialog.isVisible():
+                self._stats_dialog.refresh_data()
         except Exception as e:
             logger.error(f"刷新排行异常: {e}")
 

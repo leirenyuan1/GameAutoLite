@@ -440,6 +440,142 @@ class SettingsPage(QWidget):
         self._rebuild_hotkey_list()
         self.hotkeys_changed.emit(self._hotkeys)
 
+    def collect_ui_settings(self, global_settings: dict) -> None:
+        """将设置页控件状态安全收集到全局配置字典。"""
+        self.validate_inputs()
+        if not isinstance(global_settings, dict):
+            return
+
+        def _safe_int(value, default: int) -> int:
+            if isinstance(value, bool) or value is None:
+                return default
+            try:
+                return int(value)
+            except (ValueError, TypeError, OverflowError):
+                return default
+
+        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        move_index = self.combo_move_speed.currentIndex()
+        click_index = self.combo_click_speed.currentIndex()
+        scan_value = _safe_int(self.edit_scan_interval.text(), 200)
+        global_settings.update({
+            "scan_interval": max(0, min(10000, scan_value)),
+            "move_speed": speed_options[move_index] if 0 <= move_index < len(speed_options) else 1.0,
+            "click_speed": speed_options[click_index] if 0 <= click_index < len(speed_options) else 1.0,
+            "always_on_top": bool(self.chk_top.isChecked()),
+            "auto_minimize": bool(self.chk_auto_minimize.isChecked()),
+            "show_floating_widget": bool(self.chk_floating.isChecked()),
+            "always_show_floating": bool(self.chk_always_floating.isChecked()),
+            "floating_opacity": int(self.slider_opacity.value()),
+            "floating_disabled": bool(self.chk_floating_disabled.isChecked()),
+            "hotkeys_enabled": bool(self.chk_hotkeys_enabled.isChecked()),
+            "hotkeys": [
+                {
+                    "key": item.get("key", "").strip(),
+                    "enabled": bool(item.get("enabled", True)),
+                }
+                for item in self._hotkeys
+                if isinstance(item, dict)
+                and isinstance(item.get("key"), str)
+                and item.get("key", "").strip()
+            ],
+        })
+
+    def apply_ui_settings(self, global_settings: dict) -> None:
+        """将全局配置安全恢复到设置页控件，屏蔽恢复过程中的副作用信号。"""
+        if not isinstance(global_settings, dict):
+            return
+
+        def _safe_int(value, default: int) -> int:
+            if isinstance(value, bool) or value is None:
+                return default
+            try:
+                return int(value)
+            except (ValueError, TypeError, OverflowError):
+                return default
+
+        # 兼容旧版 f8_enabled、字典映射、字符串列表和字典列表。
+        raw_hotkeys = global_settings.get("hotkeys")
+        normalized_hotkeys: list[dict] = []
+        if isinstance(raw_hotkeys, dict):
+            for key in raw_hotkeys.values():
+                if isinstance(key, str) and key.strip():
+                    normalized_hotkeys.append({"key": key.strip(), "enabled": True})
+        elif isinstance(raw_hotkeys, list):
+            for item in raw_hotkeys:
+                if isinstance(item, dict):
+                    key = item.get("key")
+                    if isinstance(key, str) and key.strip():
+                        normalized_hotkeys.append({
+                            "key": key.strip(),
+                            "enabled": bool(item.get("enabled", True)),
+                        })
+                elif isinstance(item, str) and item.strip():
+                    normalized_hotkeys.append({"key": item.strip(), "enabled": True})
+        elif isinstance(raw_hotkeys, str) and raw_hotkeys.strip():
+            normalized_hotkeys.append({"key": raw_hotkeys.strip(), "enabled": True})
+        elif global_settings.get("f8_enabled", True):
+            normalized_hotkeys.append({"key": "f8", "enabled": True})
+        global_settings["hotkeys"] = normalized_hotkeys
+
+        raw_hk_enabled = global_settings.get("hotkeys_enabled", True)
+        hk_enabled = raw_hk_enabled if isinstance(raw_hk_enabled, bool) else True
+        global_settings["hotkeys_enabled"] = hk_enabled
+        self.chk_hotkeys_enabled.blockSignals(True)
+        self.chk_hotkeys_enabled.setChecked(hk_enabled)
+        self.chk_hotkeys_enabled.blockSignals(False)
+        self.populate_hotkeys(normalized_hotkeys)
+
+        def _set_checked(widget, value) -> None:
+            widget.blockSignals(True)
+            widget.setChecked(bool(value))
+            widget.blockSignals(False)
+
+        _set_checked(self.chk_top, global_settings.get("always_on_top", False))
+        _set_checked(self.chk_auto_minimize, global_settings.get("auto_minimize", False))
+        _set_checked(self.chk_floating, global_settings.get("show_floating_widget", False))
+        _set_checked(self.chk_always_floating, global_settings.get("always_show_floating", False))
+        _set_checked(self.chk_floating_disabled, global_settings.get("floating_disabled", False))
+
+        raw_opacity = global_settings.get("floating_opacity")
+        opacity_value = _safe_int(raw_opacity, 100)
+        self.slider_opacity.blockSignals(True)
+        self.slider_opacity.setValue(max(self.slider_opacity.minimum(), min(self.slider_opacity.maximum(), opacity_value)))
+        self.slider_opacity.blockSignals(False)
+        self.label_opacity.setText(f"{self.slider_opacity.value()}%")
+
+        minimize_on = self.chk_floating.isChecked()
+        always_on = self.chk_always_floating.isChecked()
+        if minimize_on and always_on:
+            _set_checked(self.chk_floating, False)
+            minimize_on = False
+        self.chk_always_floating.setEnabled(not minimize_on)
+        self.chk_floating.setEnabled(not always_on)
+        any_on = minimize_on or always_on
+        self.slider_opacity.setEnabled(any_on)
+        self.label_opacity.setEnabled(any_on)
+        self.chk_floating_disabled.setEnabled(any_on)
+
+        raw_scan = global_settings.get("scan_interval")
+        scan_value = _safe_int(raw_scan, 200)
+        self.edit_scan_interval.setText(str(max(0, min(10000, scan_value))))
+
+        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        def _speed_index(value) -> int:
+            if isinstance(value, bool) or value is None:
+                return 2
+            try:
+                numeric = float(value)
+            except (ValueError, TypeError, OverflowError):
+                return 2
+            for index, option in enumerate(speed_options):
+                if numeric == option:
+                    return index
+            return 2
+
+        self.combo_move_speed.setCurrentIndex(_speed_index(global_settings.get("move_speed", 1.0)))
+        self.combo_click_speed.setCurrentIndex(_speed_index(global_settings.get("click_speed", 1.0)))
+
     def validate_inputs(self) -> None:
         """设置页扫描间隔强制校验回填 (FEAT-06)."""
         if hasattr(self, "edit_scan_interval") and self.edit_scan_interval.validator():

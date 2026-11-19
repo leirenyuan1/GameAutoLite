@@ -86,3 +86,23 @@ def get_global_qss() -> str:
             width: 0;
         }}
     """
+
+
+def get_secondary_btn_qss(
+    text_color: str = CLR_TEXT_MAIN,
+    font_weight: str = "normal",
+    padding: str = "6px 12px",
+    hover_border: str = CLR_BTN_PRIMARY,
+    hover_color: str | None = None,
+) -> str:
+    """返回卡片内二级操作按钮（白底蓝框 hover 变色 + disabled 灰底）的通用 QSS."""
+    h_clr = hover_color if hover_color is not None else CLR_BTN_PRIMARY
+    return f"""
+        QPushButton {{
+            background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
+            border-radius: 6px; padding: {padding}; font-size: 12px;
+            color: {text_color}; font-weight: {font_weight};
+        }}
+        QPushButton:hover {{ border-color: {hover_border}; color: {h_clr}; }}
+        QPushButton:disabled {{ background: #F0F4F8; color: {CLR_TEXT_SUB}; border-color: {CLR_CARD_BORDER}; }}
+    """

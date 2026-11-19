@@ -88,38 +88,51 @@
 
 ```
 GameAutoLite/
-├── main.py                # 程序入口
-├── main_window.py         # 主窗口逻辑
-├── engine.py              # 引擎调度线程
-├── config_manager.py      # 配置持久化与方案导入导出
-├── hotkey_manager.py      # 多热键管理器
-├── image_engine.py        # 截图 + OpenCV 模板匹配
-├── mouse_controller.py    # 贝塞尔曲线移动 + 真实按压点击
-├── overlay_selector.py    # 全屏遮罩拖拽选区工具
-├── remote_server.py       # 远程监控 HTTP 服务器
-├── icon.ico               # 软件图标
-├── requirements.txt       # Python 依赖清单
+├── main.py                     # 程序入口
+├── main_window.py              # 主窗口逻辑
+├── engine.py                   # 引擎调度线程
+├── config_manager.py           # 配置持久化与方案图片处理
+├── hotkey_manager.py           # 多热键管理器
+├── image_engine.py             # 截图与 OpenCV 模板匹配
+├── mouse_controller.py         # 贝塞尔曲线移动与真实按压点击
+├── overlay_selector.py         # 全屏遮罩拖拽选区工具
+├── remote_server.py            # 远程监控 HTTP 服务器
+├── icon.ico                    # 软件图标
+├── requirements.txt            # Python 依赖清单
+├── README.md                   # 项目说明、运行与打包方法
+├── CLAUDE.md                   # 项目开发说明
 │
-├── styles/                # 样式模块
-│   ├── colors.py          # 颜色常量
-│   ├── icons.py           # 线性描边 SVG 图标库（渲染 + 缓存）
-│   ├── qss.py             # 全局 QSS 样式
-│   └── checkbox_style.py  # 自定义勾选框样式
+├── styles/                     # 样式与图标资源
+│   ├── __init__.py             # Python 包标记
+│   ├── colors.py               # 颜色常量
+│   ├── icons.py                # SVG 图标库、渲染与缓存
+│   ├── qss.py                  # 全局 QSS 样式
+│   └── checkbox_style.py       # 自定义勾选框样式
 │
-├── widgets/               # 组件模块
-│   ├── task_card.py       # 可折叠任务卡片
-│   ├── sidebar.py         # 左侧边栏导航
-│   ├── floating_widget.py # 悬浮状态卡片
+├── widgets/                    # 界面组件
+│   ├── __init__.py             # Python 包标记
+│   ├── task_card.py            # 可折叠任务卡片
+│   ├── dashboard_charts.py     # 数据看板图表与统计弹窗
+│   ├── match_highlight_overlay.py # 测试识别命中高亮框
+│   ├── sidebar.py              # 左侧边栏导航
+│   ├── floating_widget.py      # 悬浮状态卡片
 │   ├── hotkey_capture_dialog.py # 快捷键捕获对话框
-│   └── nav_item.py        # 导航菜单项
+│   └── nav_item.py             # 导航菜单项
 │
-└── pages/                 # 页面模块
-    ├── dashboard_page.py      # 数据看板页（KPI/排行榜/趋势图/散点图/流水审计）
-    ├── task_list_page.py      # 任务列表页
-    ├── stop_conditions_page.py # 停止条件页
-    ├── settings_page.py       # 全局设置页
-    ├── remote_monitor_page.py # 远程监控页
-    └── utils.py               # 页面工具函数
+├── pages/                      # 页面与页面辅助模块
+│   ├── __init__.py             # Python 包标记
+│   ├── dashboard_page.py       # 数据看板页面
+│   ├── task_list_page.py       # 任务列表页面
+│   ├── stop_conditions_page.py # 停止条件页面
+│   ├── settings_page.py        # 全局设置页面
+│   ├── remote_monitor_page.py  # 远程监控页面
+│   ├── remote_template.py      # 手机端监控网页模板
+│   ├── scheme_io.py            # 方案导入导出流程
+│   └── utils.py                # 页面工具函数
+│
+└── tests/                      # 自动化回归测试（不会打入程序）
+    ├── test_dashboard_limits.py
+    └── test_refactor_regressions.py
 ```
 
 ## 🚀 快速开始
@@ -156,13 +169,22 @@ python main.py
 
 ### 打包为 exe
 
+在项目根目录打开终端执行。先安装程序依赖和 PyInstaller（PyInstaller 不包含在 `requirements.txt` 中）：
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install pyinstaller
+```
+
+然后执行打包命令：
+
 ```bash
 # 文件夹形式（当前唯一发布形式，启动快）
-# --noconfirm：自动覆盖已有的 dist/build，重复打包无需手动确认
+# --noconfirm：自动覆盖已有的 dist 打包输出，无需交互确认
 python -m PyInstaller --noconfirm --windowed --icon=icon.ico --name=GameAutoLite --add-data "icon.ico;." main.py
 ```
 
-打包后把 `dist/GameAutoLite/` 整个目录压缩为 `GameAutoLite-folder.zip` 发布。
+打包后把 `dist/GameAutoLite/` 整个目录（包括 `GameAutoLite.exe` 和 `_internal/`）压缩为 `GameAutoLite-folder.zip` 发布。
 
 ## 📖 使用说明
 

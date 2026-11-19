@@ -21,20 +21,12 @@ from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect, QSizeGrip, QMenu, QToolTip,
 )
 
-# ↓ _on_stop_img_capture 仍需要这四个库，不要删除
-import cv2
-import mss
-import numpy as np
-import overlay_selector
-
 from styles.colors import *           # noqa: F403
 from styles.qss import get_global_qss
 from styles.icons import set_label_icon, ICON_STATUS
 from engine import EngineThread
 from config_manager import (
-    save_config, load_config, export_scheme, write_scheme_file,
-    parse_scheme_file, restore_task_image, restore_stop_image,
-    CONFIG_FILE, SCREENSHOTS_DIR,
+    save_config, load_config, CONFIG_FILE, SCREENSHOTS_DIR,
 )
 from hotkey_manager import HotkeyManager
 from widgets.sidebar import SideBar, STATUS_ICON_SPECS
@@ -43,6 +35,7 @@ from widgets.task_card import CollapsibleTaskCard
 from pages.task_list_page import TaskListPage
 from pages.stop_conditions_page import StopConditionsPage
 from pages.settings_page import SettingsPage
+from pages import scheme_io
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +118,6 @@ class MainWindow(QMainWindow):
         self._resize_grip = QSizeGrip(self)
         self._resize_grip.setFixedSize(16, 16)
 
-        # _stop_image_path 归属 MainWindow（见附录二），在此显式初始化
-        self._stop_image_path = None
-
         # ========== 页面 0: 任务列表 ==========
         self._task_list_page = TaskListPage(self)
 
@@ -193,77 +183,25 @@ class MainWindow(QMainWindow):
         self._set_stop_controls_enabled(False)
 
     def _set_stop_controls_enabled(self, master_on: bool) -> None:
-        """根据总开关状态设置所有停止条件控件的可用性."""
-        self.chk_stop_cond1.setEnabled(master_on)
-        self.combo_stop_task.setEnabled(master_on and self.chk_stop_cond1.isChecked())
-        self.edit_stop_exec_count.setEnabled(master_on and self.chk_stop_cond1.isChecked())
-
-        self.chk_stop_cond2.setEnabled(master_on)
-        self.edit_stop_run_minutes.setEnabled(master_on and self.chk_stop_cond2.isChecked())
-
-        self.chk_stop_cond3.setEnabled(master_on)
-        self.btn_stop_img_upload.setEnabled(master_on and self.chk_stop_cond3.isChecked())
-        self.btn_stop_img_capture.setEnabled(master_on and self.chk_stop_cond3.isChecked())
-        self.slider_stop_threshold.setEnabled(master_on and self.chk_stop_cond3.isChecked())
-        self.label_stop_threshold.setEnabled(master_on and self.chk_stop_cond3.isChecked())
-
-        self.chk_stop_cond4.setEnabled(master_on)
-        self.edit_stop_idle_minutes.setEnabled(master_on and self.chk_stop_cond4.isChecked())
-
-    # ---- 停止条件联动回调 ----
+        self._stop_conditions_page.set_stop_controls_enabled(master_on)
 
     def _on_stop_enabled_toggled(self, checked: bool) -> None:
-        self._set_stop_controls_enabled(checked)
+        self._stop_conditions_page.on_stop_enabled_toggled(checked)
 
     def _on_stop_cond1_toggled(self, checked: bool) -> None:
-        master_on = self.chk_stop_enabled.isChecked()
-        self.combo_stop_task.setEnabled(master_on and checked)
-        self.edit_stop_exec_count.setEnabled(master_on and checked)
+        self._stop_conditions_page.on_stop_cond1_toggled(checked)
 
     def _on_stop_cond2_toggled(self, checked: bool) -> None:
-        master_on = self.chk_stop_enabled.isChecked()
-        self.edit_stop_run_minutes.setEnabled(master_on and checked)
+        self._stop_conditions_page.on_stop_cond2_toggled(checked)
 
     def _on_stop_cond3_toggled(self, checked: bool) -> None:
-        master_on = self.chk_stop_enabled.isChecked()
-        self.btn_stop_img_upload.setEnabled(master_on and checked)
-        self.btn_stop_img_capture.setEnabled(master_on and checked)
-        self.slider_stop_threshold.setEnabled(master_on and checked)
-        self.label_stop_threshold.setEnabled(master_on and checked)
+        self._stop_conditions_page.on_stop_cond3_toggled(checked)
 
     def _on_stop_cond4_toggled(self, checked: bool) -> None:
-        master_on = self.chk_stop_enabled.isChecked()
-        self.edit_stop_idle_minutes.setEnabled(master_on and checked)
-
-    # ---- 停止条件图片上传/截图 ----
+        self._stop_conditions_page.on_stop_cond4_toggled(checked)
 
     def _on_stop_img_upload(self) -> None:
-        """条件三：上传识别图."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择识别模板图片", "",
-            "Images (*.png *.jpg *.jpeg *.bmp);;All Files (*)"
-        )
-        if not path:
-            return
-        self._stop_image_path = path
-        pixmap = QPixmap(path)
-        if pixmap.isNull():
-            self.stop_img_preview.setText("无效图片")
-            self.stop_img_preview.setStyleSheet(
-                "border: 2px dashed #EF5350; color: #EF5350; font-size: 11px;"
-                "border-radius: 6px;"
-            )
-            self._stop_image_path = None
-            return
-        self.stop_img_preview.setPixmap(pixmap.scaled(
-            60, 60, Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        ))
-        self.stop_img_preview.setStyleSheet(
-            f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
-        )
-
-    # ---- 选区准备与恢复 (BUG-01, BUG-02, BUG-03, DWM 零残影瞬时隐藏) ----
+        self._stop_conditions_page.on_stop_img_upload()
 
     @staticmethod
     def _set_dwm_transitions_disabled(widget: QWidget, disabled: bool) -> None:
@@ -403,118 +341,14 @@ class MainWindow(QMainWindow):
                     dlg.raise_()
 
     def _on_stop_img_capture(self) -> None:
-        """条件三：截图选取 (BUG-01, BUG-02, BUG-03)."""
-        main_win = self.window()
-        state = main_win.prepare_selection_mode() if main_win else None
-        if state is None:
-            return
-        img = None
-        try:
-            result, cropped = overlay_selector.get_region_with_image(prompt="拖拽鼠标划定停止条件识别图, 按 Esc 取消")
-            if result is not None:
-                if cropped is not None:
-                    img = cropped
-                else:
-                    QApplication.processEvents()
-                    time.sleep(0.05)
-                    x, y, w, h = result
-                    try:
-                        with mss.mss() as sct:
-                            monitor = {"top": y, "left": x, "width": w, "height": h}
-                            sct_img = sct.grab(monitor)
-                            img = np.ascontiguousarray(np.array(sct_img)[:, :, :3])
-                    except Exception as e:
-                        logger.error(f"截图捕获失败: {e}")
-        finally:
-            if main_win and state:
-                main_win.restore_after_selection(state)
-
-        if img is None:
-            return
-
-        save_dir = SCREENSHOTS_DIR
-        os.makedirs(save_dir, exist_ok=True)
-        timestamp = int(time.time() * 1000)
-        save_path = os.path.join(save_dir, f"stop_capture_{timestamp}.png")
-        # imwrite 不支持中文路径，改用 imencode + tofile（numpy 原生写入支持中文）
-        success, encoded = cv2.imencode(".png", img)
-        if not success:
-            logger.error("停止图片截图编码失败")
-            return
-        encoded.tofile(save_path)
-        self._stop_image_path = save_path
-        pixmap = QPixmap(save_path)
-        self.stop_img_preview.setPixmap(pixmap.scaled(
-            60, 60, Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        ))
-        self.stop_img_preview.setStyleSheet(
-            f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
-        )
-
-    # ---- 停止条件辅助方法 ----
+        self._stop_conditions_page.on_stop_img_capture()
 
     def _refresh_stop_task_combo(self) -> None:
-        """任务卡片增删/重命名时刷新停止条件的任务名称下拉框."""
-        current = self.combo_stop_task.currentText()
-        self.combo_stop_task.clear()
         names = [c.name_edit.text().strip() for c in self._task_cards if c.name_edit.text().strip()]
-        if names:
-            self.combo_stop_task.addItems(names)
-            self.combo_stop_task.setPlaceholderText("")
-            idx = self.combo_stop_task.findText(current)
-            if idx >= 0:
-                self.combo_stop_task.setCurrentIndex(idx)
-            elif current and self.chk_stop_cond1.isChecked():
-                self.chk_stop_cond1.setChecked(False)
-                logger.warning(f"停止条件引用的任务「{current}」已不存在，已自动取消勾选")
-        else:
-            self.combo_stop_task.setPlaceholderText("暂无任务")
+        self._stop_conditions_page.refresh_task_combo(names)
 
     def _collect_stop_conditions(self) -> dict:
-        """收集停止条件配置."""
-        result: dict = {"enabled": self.chk_stop_enabled.isChecked()}
-
-        task_name = self.combo_stop_task.currentText().strip()
-        try:
-            exec_count = int(self.edit_stop_exec_count.text())
-        except ValueError:
-            exec_count = 0
-        result["task_exec_count"] = {
-            "enabled": self.chk_stop_cond1.isChecked() and bool(task_name and exec_count > 0),
-            "task_name": task_name,
-            "count": exec_count,
-        }
-
-        try:
-            run_min = int(self.edit_stop_run_minutes.text())
-        except ValueError:
-            run_min = 0
-        result["run_time_limit"] = {
-            "enabled": self.chk_stop_cond2.isChecked() and run_min > 0,
-            "minutes": run_min,
-        }
-
-        result["image_match_stop"] = {
-            "enabled": self.chk_stop_cond3.isChecked() and bool(
-                self._stop_image_path and os.path.exists(self._stop_image_path)
-            ),
-            "image_path": self._stop_image_path or "",
-            "threshold": self.slider_stop_threshold.value(),
-        }
-
-        try:
-            idle_min = int(self.edit_stop_idle_minutes.text())
-        except ValueError:
-            idle_min = 0
-        result["no_match_timeout"] = {
-            "enabled": self.chk_stop_cond4.isChecked() and idle_min > 0,
-            "minutes": idle_min,
-        }
-
-        return result
-
-    # ---- 停止条件触发处理 ----
+        return self._stop_conditions_page.collect_stop_conditions()
 
     def _restore_window_if_auto_minimized(self) -> None:
         """如果启用了自动最小化，引擎停止后恢复窗口."""
@@ -570,54 +404,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _parse_stop_reason_lines(reason: str) -> tuple[str, str, str, str, str, str]:
-        """
-        方案 A：结构化解析停止原因，分拆至第 2 行（条件主体）与第 3 行（达标结果）
-        返回: (line2_text, icon2_key, icon2_color, line3_text, icon3_key, icon3_color)
-        """
-        # 1. 任务执行次数: 「{task_name}」已执行 {count} 次，自动停止
-        m1 = re.search(r"「(.*?)」已执行\s*(\d+)\s*次", reason)
-        if m1:
-            task_name, count = m1.group(1), m1.group(2)
-            display_name = task_name if len(task_name) <= 5 else task_name[:4] + "…"
-            line2 = f"任务：「{display_name}」"
-            line3 = f"累计已执行 {count} 次"
-            return line2, "info", CLR_STATUS_WARN, line3, "check", CLR_BTN_SUCCESS
-
-        # 2. 运行时长限制: 对齐 engine.py 的 "已运行 {minutes} 分钟，自动停止"
-        m2 = re.search(r"(?:已运行|最大运行时间)\s*(\d+)\s*分钟", reason)
-        if m2:
-            minutes = m2.group(1)
-            line2 = "挂机时长达标"
-            line3 = f"已达到 {minutes} 分钟"
-            return line2, "info", CLR_STATUS_WARN, line3, "timer", CLR_STATUS_WARN
-
-        # 3. 停止图片匹配: 对齐 engine.py 的 "识别到指定停止图片，自动停止"
-        m3 = re.search(r"匹配度\s*(\d+)%", reason)
-        if m3:
-            score = m3.group(1)
-            line2 = "目标图片命中"
-            line3 = f"匹配度 {score}%"
-            return line2, "info", CLR_STATUS_WARN, line3, "check", CLR_BTN_SUCCESS
-        elif "停止图片" in reason:
-            line2 = "目标图片命中"
-            line3 = "检测到停止图"
-            return line2, "info", CLR_STATUS_WARN, line3, "check", CLR_BTN_SUCCESS
-
-        # 4. 无匹配超时: 对齐 engine.py 的 "{minutes} 分钟无匹配，自动停止"
-        m4 = re.search(r"(?:连续\s*)?(\d+)\s*分钟(?:无匹配|未匹配)", reason)
-        if m4:
-            minutes = m4.group(1)
-            line2 = "画面无任何匹配"
-            line3 = f"已空转 {minutes} 分钟"
-            return line2, "info", CLR_STATUS_WARN, line3, "hourglass", CLR_STATUS_WARN
-
-        # 兜底通用处理
-        clean = reason.replace("，自动停止", "").replace("自动停止", "").strip()
-        if not clean:
-            return "条件停止", "info", CLR_STATUS_WARN, "—", "timer", CLR_TEXT_SUB
-        if len(clean) <= 8:
-            return clean, "info", CLR_STATUS_WARN, "—", "timer", CLR_TEXT_SUB
-        return clean[:8], "info", CLR_STATUS_WARN, clean[8:16], "check", CLR_BTN_SUCCESS
+        return StopConditionsPage.parse_stop_reason_lines(reason)
 
     def _apply_condition_stop_ui(self, reason: str = "") -> None:
         """更新状态栏为条件停止 + 同步悬浮窗 + 恢复窗口 (BUG-06, 方案A结构化呈现)."""
@@ -1437,25 +1224,11 @@ class MainWindow(QMainWindow):
             self._refresh_move_buttons()  # 解锁时按首尾位置精确恢复上下移按钮
 
     def _sync_settings_to_global(self) -> None:
-        """同步所有 UI 控件的当前值到 _global_settings."""
-        if hasattr(self, "_settings_page") and hasattr(self._settings_page, "validate_inputs"):
-            self._settings_page.validate_inputs()
-        if hasattr(self, "_stop_conditions_page") and hasattr(self._stop_conditions_page, "validate_inputs"):
-            self._stop_conditions_page.validate_inputs()
-        try:
-            self._global_settings["scan_interval"] = int(self.edit_scan_interval.text() or "200")
-        except ValueError:
-            self._global_settings["scan_interval"] = 200
-        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-        self._global_settings["move_speed"] = speed_options[self.combo_move_speed.currentIndex()]
-        self._global_settings["click_speed"] = speed_options[self.combo_click_speed.currentIndex()]
-        self._global_settings["always_on_top"] = self.chk_top.isChecked()
-        self._global_settings["auto_minimize"] = self.chk_auto_minimize.isChecked()
-        self._global_settings["show_floating_widget"] = self.chk_floating.isChecked()
-        self._global_settings["always_show_floating"] = self.chk_always_floating.isChecked()
-        self._global_settings["floating_opacity"] = self.slider_opacity.value()
-        self._global_settings["floating_disabled"] = self.chk_floating_disabled.isChecked()
-        self._global_settings["stop_conditions"] = self._collect_stop_conditions()
+        """同步设置页、停止条件页与看板历史至全局配置。"""
+        if hasattr(self, "_settings_page"):
+            self._settings_page.collect_ui_settings(self._global_settings)
+        if hasattr(self, "_stop_conditions_page"):
+            self._global_settings["stop_conditions"] = self._stop_conditions_page.collect_stop_conditions()
         if hasattr(self, "_dashboard_page"):
             exported = self._dashboard_page.export_stats_history()
             if exported:
@@ -1481,231 +1254,30 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"任务改名联动处理异常: {e}")
 
+    @property
+    def _stop_image_path(self) -> str | None:
+        page = getattr(self, "_stop_conditions_page", None)
+        return page.stop_image_path if page is not None else None
+
+    @_stop_image_path.setter
+    def _stop_image_path(self, val: str | None) -> None:
+        page = getattr(self, "_stop_conditions_page", None)
+        if page is not None:
+            page.stop_image_path = val
+
     # ---- 方案导入导出 ----
 
     def _styled_msgbox(self) -> QMessageBox:
-        """创建蓝天白云风格的 QMessageBox，置顶且居中于屏幕."""
-        msg = QMessageBox(self)
-        msg.setWindowFlags(msg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        msg.setStyleSheet(f"""
-            QMessageBox {{ background: {CLR_CARD_BG}; }}
-            QMessageBox QLabel {{ color: {CLR_TEXT_MAIN}; font-size: 13px; }}
-            QPushButton {{
-                background: {CLR_CARD_BG}; border: 1px solid {CLR_CARD_BORDER};
-                border-radius: 6px; padding: 6px 16px; font-size: 12px;
-                color: {CLR_TEXT_MAIN}; min-width: 60px;
-            }}
-            QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
-        """)
-        return msg
+        return scheme_io.styled_msgbox(self)
 
     def _exec_msgbox_centered(self, msg: QMessageBox) -> None:
-        """显示 QMessageBox 并居中于屏幕."""
-        msg.adjustSize()
-        screen = QApplication.screenAt(self.geometry().center())
-        if not screen:
-            screen = QApplication.primaryScreen()
-        geo = screen.availableGeometry()
-        msg.move(
-            geo.center().x() - msg.width() // 2,
-            geo.center().y() - msg.height() // 2,
-        )
-        msg.exec()
+        scheme_io.exec_msgbox_centered(self, msg)
 
     def _on_export(self) -> None:
-        """导出当前所有任务配置为 .galt 文件."""
-        if not self._task_cards:
-            msg = self._styled_msgbox()
-            msg.setWindowTitle("提示")
-            msg.setText("当前没有任务可导出。")
-            self._exec_msgbox_centered(msg)
-            return
-
-        # 生成默认文件名
-        if len(self._task_cards) == 1:
-            name = self._task_cards[0].name_edit.text().strip() or "方案"
-            default_name = f"{name}.galt"
-        else:
-            default_name = f"方案_{int(time.time())}.galt"
-
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出方案", default_name, "方案文件 (*.galt);;所有文件 (*)"
-        )
-        if not path:
-            return
-
-        task_data = [card.to_dict() for card in self._task_cards]
-        sc = self._collect_stop_conditions()
-        export_obj = export_scheme(task_data, sc, self._stop_image_path)
-
-        try:
-            write_scheme_file(path, export_obj)
-            msg = self._styled_msgbox()
-            msg.setWindowTitle("导出成功")
-            msg.setText(f"方案已保存到:\n{path}")
-            self._exec_msgbox_centered(msg)
-        except Exception as e:
-            msg = self._styled_msgbox()
-            msg.setWindowTitle("导出失败")
-            msg.setText(f"保存文件时出错:\n{e}")
-            self._exec_msgbox_centered(msg)
+        scheme_io.export_scheme_dialog(self)
 
     def _on_import(self) -> None:
-        """从 .galt 文件导入方案, 替换当前所有任务."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "导入方案", "", "方案文件 (*.galt);;所有文件 (*)"
-        )
-        if not path:
-            return
-
-        try:
-            tasks_data, imported_stop_conditions, stop_image_filename, stop_image_data = \
-                parse_scheme_file(path)
-        except Exception as e:
-            msg = self._styled_msgbox()
-            msg.setWindowTitle("导入失败")
-            msg.setText(f"无法读取文件:\n{e}")
-            self._exec_msgbox_centered(msg)
-            return
-
-        msg = self._styled_msgbox()
-        msg.setWindowTitle("导入方案")
-        msg.setText("请选择导入方式：")
-        msg.setInformativeText("替换：清空当前任务后导入\n新增：追加到当前任务末尾")
-        btn_replace = msg.addButton("替换", QMessageBox.ButtonRole.AcceptRole)
-        btn_append = msg.addButton("新增", QMessageBox.ButtonRole.ActionRole)
-        btn_cancel = msg.addButton("取消", QMessageBox.ButtonRole.RejectRole)
-        self._exec_msgbox_centered(msg)
-
-        if msg.clickedButton() != btn_replace and msg.clickedButton() != btn_append:
-            return
-
-        if msg.clickedButton() == btn_replace:
-            self._clear_tasks_no_anim()
-            self._stop_image_path = None
-            self.stop_img_preview.setText("无图片")
-            self.stop_img_preview.setStyleSheet(
-                f"border: 2px dashed {CLR_CARD_BORDER}; color: {CLR_TEXT_SUB}; font-size: 11px;"
-                "border-radius: 6px;"
-            )
-
-        # 新增模式 + 方案的停止条件总开关启用 → 询问是否覆盖当前停止条件
-        # （export_scheme 会无条件写入 stop_conditions 字段，必须按 enabled 判断，
-        #   否则未设置停止条件的方案导入时也会 100% 弹窗）
-        apply_stop_conditions = True
-        if (msg.clickedButton() == btn_append
-                and isinstance(imported_stop_conditions, dict)
-                and imported_stop_conditions.get("enabled", False)):
-            msg_sc = self._styled_msgbox()
-            msg_sc.setWindowTitle("导入停止条件")
-            msg_sc.setText("新增方案包含停止条件，是否覆盖当前的停止条件？")
-            msg_sc.setInformativeText(
-                "是：将当前的停止条件替换为新增方案的停止条件\n"
-                "否：保留当前的停止条件，不做改动"
-            )
-            btn_sc_yes = msg_sc.addButton("是", QMessageBox.ButtonRole.AcceptRole)
-            btn_sc_no = msg_sc.addButton("否", QMessageBox.ButtonRole.RejectRole)
-            btn_sc_cancel = msg_sc.addButton("取消", QMessageBox.ButtonRole.RejectRole)
-            self._exec_msgbox_centered(msg_sc)
-            if msg_sc.clickedButton() == btn_sc_cancel:
-                return  # 中止整个导入（任务也不导入）
-            apply_stop_conditions = (msg_sc.clickedButton() == btn_sc_yes)
-
-        # 导入新任务（智能检测图片）
-        for item in tasks_data:
-            if not isinstance(item, dict):
-                continue
-            restore_task_image(item)
-            # 名称去重
-            raw_name = item.get("name")
-            name = raw_name.strip() if isinstance(raw_name, str) else ""
-            if not name:
-                item["name"] = self._next_task_name()
-            else:
-                existing = {c.name_edit.text().strip() for c in self._task_cards}
-                if name in existing:
-                    n = 2
-                    while f"{name}({n})" in existing:
-                        n += 1
-                    item["name"] = f"{name}({n})"
-            self._add_task(item, refresh_combo=False)
-
-        # 刷新停止条件 combo
-        self._refresh_stop_task_combo()
-
-        if apply_stop_conditions:
-            # 还原停止条件图片
-            restored = restore_stop_image(stop_image_filename, stop_image_data, self._stop_image_path)
-            self._stop_image_path = restored
-
-            if self._stop_image_path and os.path.exists(self._stop_image_path):
-                pixmap = QPixmap(self._stop_image_path)
-                if not pixmap.isNull():
-                    self.stop_img_preview.setPixmap(pixmap.scaled(
-                        60, 60, Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    ))
-                    self.stop_img_preview.setStyleSheet(
-                        f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
-                    )
-            elif msg.clickedButton() == btn_replace or not self._stop_image_path or not os.path.exists(self._stop_image_path or ""):
-                self.stop_img_preview.setText("无图片")
-                self.stop_img_preview.setStyleSheet(
-                    f"border: 2px dashed {CLR_CARD_BORDER}; color: {CLR_TEXT_SUB}; font-size: 11px;"
-                    "border-radius: 6px;"
-                )
-
-            # 恢复停止条件配置（开关状态、参数值）
-            if imported_stop_conditions and isinstance(imported_stop_conditions, dict):
-                # 把还原的图片路径写入条件三
-                if self._stop_image_path and "image_match_stop" in imported_stop_conditions:
-                    imported_stop_conditions["image_match_stop"]["image_path"] = self._stop_image_path
-                self._global_settings["stop_conditions"] = imported_stop_conditions
-                # 恢复 UI
-                sc = imported_stop_conditions
-                self.chk_stop_enabled.blockSignals(True)
-                self.chk_stop_enabled.setChecked(sc.get("enabled", False))
-                self.chk_stop_enabled.blockSignals(False)
-
-                tc = sc.get("task_exec_count") or {}
-                self.chk_stop_cond1.blockSignals(True)
-                self.chk_stop_cond1.setChecked(tc.get("enabled", False))
-                self.chk_stop_cond1.blockSignals(False)
-                self.edit_stop_exec_count.setText(str(tc.get("count") or 5))
-
-                # 恢复目标任务下拉框（导入时任务已加入 _task_cards，无需 pending 机制）
-                task_name = tc.get("task_name") or ""
-                if task_name:
-                    idx = self.combo_stop_task.findText(task_name)
-                    if idx >= 0:
-                        self.combo_stop_task.setCurrentIndex(idx)
-                    elif self.chk_stop_cond1.isChecked():
-                        self.chk_stop_cond1.setChecked(False)
-                        logger.warning(f"导入方案的停止条件引用了不存在的任务「{task_name}」，已取消条件一勾选")
-
-                rl = sc.get("run_time_limit") or {}
-                self.chk_stop_cond2.blockSignals(True)
-                self.chk_stop_cond2.setChecked(rl.get("enabled", False))
-                self.chk_stop_cond2.blockSignals(False)
-                self.edit_stop_run_minutes.setText(str(rl.get("minutes") or 10))
-
-                ims = sc.get("image_match_stop") or {}
-                self.chk_stop_cond3.blockSignals(True)
-                self.chk_stop_cond3.setChecked(ims.get("enabled", False))
-                self.chk_stop_cond3.blockSignals(False)
-                self.slider_stop_threshold.setValue(ims.get("threshold") or 90)
-
-                nmt = sc.get("no_match_timeout") or {}
-                self.chk_stop_cond4.blockSignals(True)
-                self.chk_stop_cond4.setChecked(nmt.get("enabled", False))
-                self.chk_stop_cond4.blockSignals(False)
-                self.edit_stop_idle_minutes.setText(str(nmt.get("minutes") or 5))
-
-                self._on_stop_enabled_toggled(self.chk_stop_enabled.isChecked())
-
-        self._save_config()
-
-    # ---- 配置持久化 ----
+        scheme_io.import_scheme_dialog(self)
 
     def _save_config(self) -> None:
         self._sync_settings_to_global()
@@ -1717,231 +1289,61 @@ class MainWindow(QMainWindow):
     def _load_config(self) -> None:
         data = load_config()
         if data is None:
-            # 首次使用：设置默认快捷键
-            # 安全：populate_hotkeys 内部 _create_hotkey_row 对 chk 使用 blockSignals
-            # 不会触发 hotkeys_changed 信号链
             self._global_settings["hotkeys"] = [{"key": "f8", "enabled": True}]
             self._global_settings["hotkeys_enabled"] = True
-            self._settings_page.chk_hotkeys_enabled.blockSignals(True)
-            self._settings_page.chk_hotkeys_enabled.setChecked(True)
-            self._settings_page.chk_hotkeys_enabled.blockSignals(False)
-            self._settings_page.populate_hotkeys(self._global_settings["hotkeys"])
+            self._settings_page.apply_ui_settings(self._global_settings)
             self._hotkey_mgr.register_all(self, "_toggle_engine", self._global_settings["hotkeys"])
             self._add_task()
             return
-        if isinstance(data, dict):
-                saved = data.get("settings") or {}
-                self._global_settings.update(saved)
-                raw_history = self._global_settings.get("stats_history") or data.get("stats_history")
-                if hasattr(self, "_dashboard_page"):
-                    self._dashboard_page.load_stats_history(raw_history)
 
-                # 兼容旧配置与不同格式：f8_enabled / 字典格式 / 字符串列表 → hotkeys 统一迁移
-                raw_hotkeys = self._global_settings.get("hotkeys")
-                if not raw_hotkeys:
-                    if self._global_settings.get("f8_enabled", True):
-                        self._global_settings["hotkeys"] = [{"key": "f8", "enabled": True}]
-                    else:
-                        self._global_settings["hotkeys"] = []
-                elif isinstance(raw_hotkeys, dict):
-                    self._global_settings["hotkeys"] = [{"key": str(v), "enabled": True} for v in raw_hotkeys.values() if v]
-                elif isinstance(raw_hotkeys, list):
-                    norm_h = []
-                    for h in raw_hotkeys:
-                        if isinstance(h, dict) and isinstance(h.get("key"), str) and h["key"].strip():
-                            norm_h.append({"key": h["key"].strip(), "enabled": bool(h.get("enabled", True))})
-                        elif isinstance(h, str) and h.strip():
-                            norm_h.append({"key": h.strip(), "enabled": True})
-                    self._global_settings["hotkeys"] = norm_h
-                else:
-                    self._global_settings["hotkeys"] = [{"key": "f8", "enabled": True}]
-
-                # 设置 hotkeys_enabled 默认值
-                if "hotkeys_enabled" not in self._global_settings:
-                    self._global_settings["hotkeys_enabled"] = True
-
-                # 填充设置页快捷键列表 UI
-                self._settings_page.chk_hotkeys_enabled.blockSignals(True)
-                self._settings_page.chk_hotkeys_enabled.setChecked(
-                    self._global_settings.get("hotkeys_enabled", True)
-                )
-                self._settings_page.chk_hotkeys_enabled.blockSignals(False)
-                self._settings_page.populate_hotkeys(self._global_settings["hotkeys"])
-
-                # 注册热键
-                self._restore_hotkeys()
-
-                # 同步 UI 控件 - 复选框
-                top_enabled = self._global_settings.get("always_on_top", False)
-                if top_enabled:
-                    self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-                self.chk_top.blockSignals(True)
-                self.chk_top.setChecked(top_enabled)
-                self.chk_top.blockSignals(False)
-                self.chk_auto_minimize.setChecked(
-                    self._global_settings.get("auto_minimize", False)
-                )
-                # 用 blockSignals 防止加载配置时误触发预览
-                self.chk_floating.blockSignals(True)
-                self.chk_floating.setChecked(
-                    self._global_settings.get("show_floating_widget", False)
-                )
-                self.chk_floating.blockSignals(False)
-
-                self.slider_opacity.blockSignals(True)
-                raw_opacity = self._global_settings.get("floating_opacity")
-                try:
-                    opacity_value = 100 if raw_opacity is None else int(raw_opacity)
-                except (ValueError, TypeError):
-                    opacity_value = 100
-                self.slider_opacity.setValue(opacity_value)
-                self.label_opacity.setText(f"{self.slider_opacity.value()}%")  # 使用滑块钳制后的真实值
-                self.slider_opacity.blockSignals(False)
-
-                self.chk_floating_disabled.blockSignals(True)
-                self.chk_floating_disabled.setChecked(
-                    self._global_settings.get("floating_disabled", False)
-                )
-                self.chk_floating_disabled.blockSignals(False)
-
-                # 新增：读取 always_show_floating
-                self.chk_always_floating.blockSignals(True)
-                self.chk_always_floating.setChecked(
-                    self._global_settings.get("always_show_floating", False)
-                )
-                self.chk_always_floating.blockSignals(False)
-
-                # 初始状态设置（不能直接调用 _on_floating_toggled，因为没有 sender）
-                minimize_on = self.chk_floating.isChecked()
-                always_on = self.chk_always_floating.isChecked()
-
-                # 防御：如果配置异常导致两个都为 True，优先保留"始终显示"，重置"最小化"
-                if minimize_on and always_on:
-                    self.chk_floating.blockSignals(True)
-                    self.chk_floating.setChecked(False)
-                    self.chk_floating.blockSignals(False)
-                    minimize_on = False
-
-                any_on = minimize_on or always_on
-
-                # 互斥：如果一个已勾选，禁用另一个
-                if minimize_on:
-                    self.chk_always_floating.setEnabled(False)
-                if always_on:
-                    self.chk_floating.setEnabled(False)
-
-                # 联动子项
-                self.slider_opacity.setEnabled(any_on)
-                self.label_opacity.setEnabled(any_on)
-                self.chk_floating_disabled.setEnabled(any_on)
-
-                # 启动时如果勾选了"始终显示悬浮窗"，立即显示悬浮窗
-                if always_on:
-                    self._sync_and_show_floating()
-
-                # 同步 UI 控件 - 图像扫描间隔（显式判断 is None，保留合法的 0ms 全速扫描配置）
-                raw_scan = self._global_settings.get("scan_interval")
-                try:
-                    scan_val = 200 if raw_scan is None else max(0, min(10000, int(raw_scan)))
-                except (ValueError, TypeError):
-                    scan_val = 200
-                self.edit_scan_interval.setText(str(scan_val))
-
-                # 同步 UI 控件 - 鼠标速度
-                speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-                move_speed = self._global_settings.get("move_speed", 1.0)
-                click_speed = self._global_settings.get("click_speed", 1.0)
-                if move_speed in speed_options:
-                    self.combo_move_speed.setCurrentIndex(speed_options.index(move_speed))
-                if click_speed in speed_options:
-                    self.combo_click_speed.setCurrentIndex(speed_options.index(click_speed))
-
-                # 恢复停止条件配置
-                sc = self._global_settings.get("stop_conditions") or {}
-                self.chk_stop_enabled.blockSignals(True)
-                self.chk_stop_enabled.setChecked(sc.get("enabled", False))
-                self.chk_stop_enabled.blockSignals(False)
-
-                tc = sc.get("task_exec_count") or {}
-                self._pending_stop_cond1_enabled = tc.get("enabled", False)
-                self.edit_stop_exec_count.setText(str(tc.get("count") or 5))
-                self._pending_stop_task_name = tc.get("task_name", "")
-
-                rl = sc.get("run_time_limit") or {}
-                self.chk_stop_cond2.blockSignals(True)
-                self.chk_stop_cond2.setChecked(rl.get("enabled", False))
-                self.chk_stop_cond2.blockSignals(False)
-                self.edit_stop_run_minutes.setText(str(rl.get("minutes") or 10))
-
-                ims = sc.get("image_match_stop") or {}
-                self.chk_stop_cond3.blockSignals(True)
-                self.chk_stop_cond3.setChecked(ims.get("enabled", False))
-                self.chk_stop_cond3.blockSignals(False)
-                self._stop_image_path = ims.get("image_path") or None
-                if self._stop_image_path and os.path.exists(self._stop_image_path):
-                    pixmap = QPixmap(self._stop_image_path)
-                    if not pixmap.isNull():
-                        self.stop_img_preview.setPixmap(pixmap.scaled(
-                            60, 60, Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation
-                        ))
-                        self.stop_img_preview.setStyleSheet(
-                            f"border: 1px solid {CLR_CARD_BORDER}; border-radius: 6px;"
-                        )
-                    else:
-                        self._stop_image_path = None
-                        self.stop_img_preview.setText("无效图片")
-                elif self._stop_image_path:
-                    self._stop_image_path = None
-                    self.stop_img_preview.setText("图片已丢失")
-                    self.chk_stop_cond3.setChecked(False)
-                self.slider_stop_threshold.setValue(ims.get("threshold") or 90)
-
-                nmt = sc.get("no_match_timeout") or {}
-                self.chk_stop_cond4.blockSignals(True)
-                self.chk_stop_cond4.setChecked(nmt.get("enabled", False))
-                self.chk_stop_cond4.blockSignals(False)
-                self.edit_stop_idle_minutes.setText(str(nmt.get("minutes") or 5))
-
-                self._on_stop_enabled_toggled(self.chk_stop_enabled.isChecked())
-
-                tasks_raw = data.get("tasks") or []
-                if not isinstance(tasks_raw, list):
-                    logger.error("config.json 中 tasks 字段格式不正确，已忽略任务列表")
-                    tasks_raw = []
-                for item in tasks_raw:
-                    if not isinstance(item, dict):
-                        continue
-                    # 补全空名称（安全防守 name 值为 None 时 strip() 触发 AttributeError）
-                    name_val = item.get("name")
-                    if not isinstance(name_val, str) or not name_val.strip():
-                        item["name"] = self._next_task_name()
-                    # 去重：与已加载的卡片名称冲突时自动加后缀
-                    else:
-                        existing = {c.name_edit.text().strip() for c in self._task_cards}
-                        name = name_val.strip()
-                        if name in existing:
-                            n = 2
-                            while f"{name}({n})" in existing:
-                                n += 1
-                            item["name"] = f"{name}({n})"
-                        else:
-                            item["name"] = name
-                    self._add_task(item, refresh_combo=False)
-
-                # 末尾统一刷新停止条件 combo
-                self._refresh_stop_task_combo()
-                if hasattr(self, '_pending_stop_task_name') and self._pending_stop_task_name:
-                    idx = self.combo_stop_task.findText(self._pending_stop_task_name)
-                    if idx >= 0:
-                        self.combo_stop_task.setCurrentIndex(idx)
-                    del self._pending_stop_task_name
-                if hasattr(self, '_pending_stop_cond1_enabled'):
-                    self.chk_stop_cond1.setChecked(self._pending_stop_cond1_enabled)
-                    del self._pending_stop_cond1_enabled
-
-        else:
+        if not isinstance(data, dict):
             self._add_task()
+            return
+
+        saved = data.get("settings")
+        if isinstance(saved, dict):
+            self._global_settings.update(saved)
+
+        raw_history = self._global_settings.get("stats_history") or data.get("stats_history")
+        if hasattr(self, "_dashboard_page"):
+            self._dashboard_page.load_stats_history(raw_history)
+
+        # 先恢复设置页控件，再由主窗口恢复窗口、热键与常驻悬浮窗状态。
+        self._settings_page.apply_ui_settings(self._global_settings)
+        self.setWindowFlag(
+            Qt.WindowType.WindowStaysOnTopHint,
+            self.chk_top.isChecked(),
+        )
+        self._restore_hotkeys()
+        if self.chk_always_floating.isChecked():
+            self._sync_and_show_floating()
+
+        tasks_raw = data.get("tasks") or []
+        if not isinstance(tasks_raw, list):
+            logger.error("config.json 中 tasks 字段格式不正确，已忽略任务列表")
+            tasks_raw = []
+        for item in tasks_raw:
+            if not isinstance(item, dict):
+                continue
+            name_val = item.get("name")
+            if not isinstance(name_val, str) or not name_val.strip():
+                item["name"] = self._next_task_name()
+            else:
+                name = name_val.strip()
+                existing = {c.name_edit.text().strip() for c in self._task_cards}
+                if name in existing:
+                    n = 2
+                    while f"{name}({n})" in existing:
+                        n += 1
+                    item["name"] = f"{name}({n})"
+                else:
+                    item["name"] = name
+            self._add_task(item, refresh_combo=False)
+
+        # 先刷新任务下拉框，再恢复引用任务名称的停止条件。
+        self._refresh_stop_task_combo()
+        sc = self._global_settings.get("stop_conditions")
+        self._stop_conditions_page.apply_stop_conditions(sc if isinstance(sc, dict) else {})
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

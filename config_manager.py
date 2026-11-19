@@ -134,7 +134,17 @@ def restore_task_image(item: dict) -> dict:
     返回修改后的 item（原地修改并返回）。
     """
     img_filename = item.get("image_filename", "")
-    img_data = item.get("image_data")
+    if not isinstance(img_filename, str):
+        img_filename = ""
+        item["image_filename"] = img_filename
+    img_data = item.get("image_data", "")
+    if not isinstance(img_data, str):
+        img_data = ""
+        item["image_data"] = img_data
+    img_path = item.get("image_path", "")
+    if not isinstance(img_path, str):
+        img_path = ""
+        item["image_path"] = img_path
 
     if img_data:
         try:
@@ -156,7 +166,6 @@ def restore_task_image(item: dict) -> dict:
             logger.error(f"从方案还原图片失败: {e}")
 
     # 若无 base64 或解析失败，回退尝试原本地路径
-    img_path = item.get("image_path", "")
     if img_path and os.path.exists(img_path):
         return item
 
@@ -178,6 +187,13 @@ def restore_stop_image(
     """
     优先还原导入文件中的停止图片（带 hash8 命名防错绑）；失败时 fallback 当前图片，返回有效路径或 None。
     """
+    if not isinstance(stop_image_filename, str):
+        stop_image_filename = ""
+    if not isinstance(stop_image_data, str):
+        stop_image_data = ""
+    if not isinstance(current_stop_image_path, str):
+        current_stop_image_path = None
+
     if stop_image_data:
         try:
             img_bytes = base64.b64decode(stop_image_data)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import logging
+import math
 import os
 import time
 
@@ -12,8 +13,8 @@ import cv2
 import mss
 import numpy as np
 
-from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer, QRectF, QSize
-from PyQt6.QtGui import QPixmap, QColor, QPainter, QPen, QFont
+from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer, QSize
+from PyQt6.QtGui import QPixmap, QColor
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QSlider,
@@ -31,104 +32,15 @@ from styles.colors import (
     CLR_BTN_DANGER, CLR_CARD_BG, CLR_CONTENT_BG,
 )
 
+from widgets.match_highlight_overlay import MatchHighlightOverlay
+from styles.qss import get_secondary_btn_qss
+
+_MatchHighlightOverlay = MatchHighlightOverlay
+
 if TYPE_CHECKING:
     from main_window import MainWindow
 
 logger = logging.getLogger(__name__)
-
-
-class _MatchHighlightOverlay(QWidget):
-    """测试识别匹配结果全屏透明高亮框 (FEAT-02)"""
-
-    def __init__(
-        self,
-        task_name: str,
-        score_pct: float,
-        passed: bool,
-        rx: int,
-        ry: int,
-        rw: int,
-        rh: int,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._task_name = task_name
-        self._score_pct = score_pct
-        self._passed = passed
-        self._tag_bg_color = QColor("#43A047") if passed else QColor("#FF9800")
-        self._rx, self._ry, self._rw, self._rh = rx, ry, rw, rh
-        self._setup_ui()
-
-    def _setup_ui(self) -> None:
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-            | Qt.WindowType.WindowTransparentForInput
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
-
-        ratio = self.devicePixelRatioF()
-        lx, ly = int(self._rx / ratio), int(self._ry / ratio)
-        lw, lh = max(1, int(self._rw / ratio)), max(1, int(self._rh / ratio))
-        self._lx, self._ly, self._lw, self._lh = lx, ly, lw, lh
-
-        pad_x = 4
-        pad_top = 28
-        win_w = max(lw + pad_x * 2, 160)
-        win_h = lh + pad_top + 4
-
-        screen = QApplication.primaryScreen().geometry()
-        tag_below = (ly < pad_top)
-        self._tag_below = tag_below
-        win_y = ly if tag_below else (ly - pad_top)
-        win_x = max(0, min(lx - pad_x, screen.width() - win_w))
-        win_y = max(0, min(win_y, screen.height() - win_h))
-        self.setGeometry(win_x, win_y, win_w, win_h)
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        win_x = self.x()
-        win_y = self.y()
-        target_x = self._lx - win_x
-        target_y = self._ly - win_y
-        lw, lh = self._lw, self._lh
-
-        # 1. 目标框体 (消除边缘 Clamp 平移错位)
-        painter.setPen(QPen(self._tag_bg_color, 2, Qt.PenStyle.SolidLine if self._passed else Qt.PenStyle.DashLine))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(QRectF(target_x, target_y, lw, lh), 2.5, 2.5)
-
-        # 2. 胶囊标签 (固定字体，长任务名自适应省略与截断保护)
-        painter.setFont(QFont("Microsoft YaHei", 9))
-        fm = painter.fontMetrics()
-        win_w = self.width()
-        win_h = self.height()
-        max_tag_w = max(60, win_w - 8)
-        elided_name = fm.elidedText(self._task_name, Qt.TextElideMode.ElideRight, max(30, max_tag_w - 55))
-        raw_tag = f"{elided_name} · {self._score_pct:.1f}%" if self._passed else f"未达标 · 最高 {self._score_pct:.1f}%"
-        tag_text = fm.elidedText(raw_tag, Qt.TextElideMode.ElideRight, max_tag_w - 12)
-        tag_w = min(max_tag_w, fm.horizontalAdvance(tag_text) + 14)
-        tag_h = 22
-
-        # 3. 标签坐标安全 clamp
-        tag_x = max(2, min(target_x, win_w - tag_w - 2))
-        if self._tag_below:
-            tag_y = min(win_h - tag_h - 2, target_y + lh + 4)
-        else:
-            tag_y = max(2, target_y - tag_h - 4)
-
-        # 4. 绘制圆角胶囊背景与文字
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self._tag_bg_color)
-        painter.drawRoundedRect(QRectF(tag_x, tag_y, tag_w, tag_h), 4.0, 4.0)
-        painter.setPen(QColor("#FFFFFF"))
-        painter.drawText(QRectF(tag_x, tag_y, tag_w, tag_h), Qt.AlignmentFlag.AlignCenter, tag_text)
 
 
 class CollapsibleTaskCard(QFrame):
@@ -283,40 +195,18 @@ class CollapsibleTaskCard(QFrame):
         row2 = QHBoxLayout()
         self.btn_upload = IconButton("image", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
         self.btn_upload.setText("上传识别图")
-        self.btn_upload.setStyleSheet(f"""
-            QPushButton {{
-                background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
-                border-radius: 6px; padding: 6px 12px; font-size: 12px;
-                color: {CLR_TEXT_MAIN};
-            }}
-            QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
-        """)
+        self.btn_upload.setStyleSheet(get_secondary_btn_qss())
         self.btn_upload.clicked.connect(self._on_upload_image)
 
         self.btn_capture = IconButton("camera", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
         self.btn_capture.setText("截图上传")
-        self.btn_capture.setStyleSheet(f"""
-            QPushButton {{
-                background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
-                border-radius: 6px; padding: 6px 12px; font-size: 12px;
-                color: {CLR_TEXT_MAIN};
-            }}
-            QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
-        """)
+        self.btn_capture.setStyleSheet(get_secondary_btn_qss())
         self.btn_capture.clicked.connect(self._on_screenshot_capture)
 
         self.btn_test = IconButton("target", CLR_TEXT_MAIN, CLR_BTN_PRIMARY, ICON_BTN)
         self.btn_test.setText("测试识别")
         self.btn_test.setFixedWidth(92)
-        self.btn_test.setStyleSheet(f"""
-            QPushButton {{
-                background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
-                border-radius: 6px; padding: 6px 8px; font-size: 12px;
-                color: {CLR_TEXT_MAIN};
-            }}
-            QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
-            QPushButton:disabled {{ background: #F0F4F8; color: {CLR_TEXT_SUB}; border-color: {CLR_CARD_BORDER}; }}
-        """)
+        self.btn_test.setStyleSheet(get_secondary_btn_qss(padding="6px 8px"))
         self.btn_test.clicked.connect(self._on_test_match)
         self._test_btn_timer = QTimer(self)
         self._test_btn_timer.setSingleShot(True)
@@ -373,30 +263,14 @@ class CollapsibleTaskCard(QFrame):
         self.btn_roi.setText("范围")
         self.btn_roi.setFixedHeight(28)
         self.btn_roi.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.btn_roi.setStyleSheet(f"""
-            QPushButton {{
-                background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
-                border-radius: 6px; padding: 0 8px; font-size: 12px;
-                color: {CLR_TEXT_MAIN};
-            }}
-            QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
-            QPushButton:disabled {{ background: #F0F4F8; color: {CLR_TEXT_SUB}; border-color: {CLR_CARD_BORDER}; }}
-        """)
+        self.btn_roi.setStyleSheet(get_secondary_btn_qss(padding="0 8px"))
         self.btn_roi.clicked.connect(self._on_set_roi)
         row_roi.addWidget(self.btn_roi)
 
         self.btn_roi_reset = QPushButton("重置")
         self.btn_roi_reset.setFixedHeight(28)
         self.btn_roi_reset.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.btn_roi_reset.setStyleSheet(f"""
-            QPushButton {{
-                background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
-                border-radius: 6px; padding: 0 8px; font-size: 12px;
-                color: {CLR_TEXT_MAIN};
-            }}
-            QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
-            QPushButton:disabled {{ background: #F0F4F8; color: {CLR_TEXT_SUB}; border-color: {CLR_CARD_BORDER}; }}
-        """)
+        self.btn_roi_reset.setStyleSheet(get_secondary_btn_qss(padding="0 8px"))
         self.btn_roi_reset.clicked.connect(self._on_reset_roi)
         self.btn_roi_reset.setVisible(False)
         row_roi.addWidget(self.btn_roi_reset)
@@ -418,14 +292,7 @@ class CollapsibleTaskCard(QFrame):
         self.btn_region.setText("设定")
         self.btn_region.setFixedHeight(28)
         self.btn_region.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.btn_region.setStyleSheet(f"""
-            QPushButton {{
-                background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
-                border-radius: 6px; padding: 0 8px; font-size: 12px;
-                color: {CLR_TEXT_MAIN};
-            }}
-            QPushButton:hover {{ border-color: {CLR_BTN_PRIMARY}; color: {CLR_BTN_PRIMARY}; }}
-        """)
+        self.btn_region.setStyleSheet(get_secondary_btn_qss(padding="0 8px"))
         self.btn_region.clicked.connect(self._on_set_region)
 
         self.label_region = QLabel("未设定")
@@ -1081,15 +948,7 @@ class CollapsibleTaskCard(QFrame):
     def _reset_test_button(self) -> None:
         self.btn_test.set_icon("target", CLR_TEXT_MAIN, CLR_BTN_PRIMARY)
         self.btn_test.setText("测试识别")
-        self.btn_test.setStyleSheet(f"""
-            QPushButton {{
-                background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
-                border-radius: 6px; padding: 6px 8px; font-size: 12px;
-                color: {CLR_TEXT_MAIN};
-            }}
-            QPushButton:hover {{ border-color: #B0CDE8; color: {CLR_BTN_PRIMARY}; }}
-            QPushButton:disabled {{ background: #F0F4F8; color: {CLR_TEXT_SUB}; border-color: {CLR_CARD_BORDER}; }}
-        """)
+        self.btn_test.setStyleSheet(get_secondary_btn_qss(padding="6px 8px", hover_border="#B0CDE8"))
 
     def _set_test_btn_warning(self, text: str) -> None:
         self.btn_test.set_icon("alert-triangle", "#F57C00", "#E65100")
@@ -1184,15 +1043,7 @@ class CollapsibleTaskCard(QFrame):
                 self.btn_test.set_icon("info", "#F57C00", "#E65100")
                 txt_clr = "#E65100"
             self.btn_test.setText(f"{score_pct:.1f}%")
-            self.btn_test.setStyleSheet(f"""
-                QPushButton {{
-                    background: {CLR_CONTENT_BG}; border: 1px solid {CLR_CARD_BORDER};
-                    border-radius: 6px; padding: 6px 8px; font-size: 12px;
-                    color: {txt_clr}; font-weight: bold;
-                }}
-                QPushButton:hover {{ border-color: #B0CDE8; color: {CLR_BTN_PRIMARY}; }}
-                QPushButton:disabled {{ background: #F0F4F8; color: {CLR_TEXT_SUB}; border-color: {CLR_CARD_BORDER}; }}
-            """)
+            self.btn_test.setStyleSheet(get_secondary_btn_qss(text_color=txt_clr, font_weight="bold", padding="6px 8px", hover_border="#B0CDE8", hover_color=txt_clr))
             self._test_btn_timer.start(2000)
 
             # 弹出透明高亮浮窗并安全管理生命周期
@@ -1291,7 +1142,8 @@ class CollapsibleTaskCard(QFrame):
     def from_dict(self, data: dict) -> None:
         self.name_edit.setText((data.get("name") or "").strip())  # or "" 防 None
         self._last_valid_name = self.name_edit.text().strip()
-        enabled = data.get("enabled", True)
+        raw_en = data.get("enabled", True)
+        enabled = raw_en if isinstance(raw_en, bool) else (True if raw_en is None else bool(raw_en))
         self.chk_enabled.setChecked(enabled)
         self._is_enabled = enabled
         self._update_header_style()
@@ -1320,16 +1172,17 @@ class CollapsibleTaskCard(QFrame):
                 f"border: 2px dashed {CLR_CARD_BORDER}; color: {CLR_TEXT_SUB}; font-size: 11px;"
                 "border-radius: 6px;"
             )
-        th = data.get("threshold", 90)
-        try:
-            th_f = float(th)
-            if th_f <= 1.0:
-                th_val = int(round(th_f * 100))
-            else:
-                th_val = int(round(th_f))
-        except (ValueError, TypeError):
-            th_val = 90
-        self.slider.setValue(max(0, min(100, th_val)))
+        raw_threshold = data.get("threshold", 90)
+        th_val = 90
+        if not isinstance(raw_threshold, bool) and raw_threshold is not None:
+            try:
+                th_f = float(raw_threshold)
+                if math.isfinite(th_f):
+                    th_val = int(round(th_f * 100)) if 0.0 < th_f <= 1.0 else int(round(th_f))
+                    th_val = max(50, min(99, th_val))
+            except (ValueError, TypeError, OverflowError):
+                pass
+        self.slider.setValue(th_val)
 
         sr = data.get("search_region")
         if sr and isinstance(sr, (list, tuple)) and len(sr) == 4:
